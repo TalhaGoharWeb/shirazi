@@ -1,0 +1,8 @@
+{
+  "_comment": "Shirazi device registry \u2014 SKELETON for later phases (device/audio management). Not wired into any code path yet; audio devices are currently chosen by NAME via config/api_keys.json (input_device/output_device, '' = system default).",
+  "audio": {
+    "input_device": "",
+    "output_device": ""
+  },
+  "paired_phones": []
+}

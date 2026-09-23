@@ -1,5 +1,5 @@
 """
-Local wake-word detection for JARVIS ("Hey Jarvis").
+Local wake-word detection for SHIRAZI.
 
 Design goals:
   • ZERO cost when the feature is off — openwakeword is imported ONLY inside
@@ -11,9 +11,20 @@ Design goals:
     Gemini stream are never slowed.
   • Fully local & offline — audio fed here never leaves the machine; there is no
     network call except the one-time model download the user triggers from the UI.
+    Mic audio is NEVER streamed to the cloud for wake-word detection.
+
+Wake-word branding note (read before renaming anything here):
+  The branded wake phrases are "Hey Shirazi" / "Shirazi" (see
+  BRANDED_WAKE_WORDS / WAKE_WORD_ALIASES below, and the `wake_words` key in
+  config). BUT the only pretrained ONNX model available today is the legacy
+  "hey_jarvis" model — a wake model is trained on one exact phrase, so no
+  config alias can make it hear "Shirazi". Until a Hey-Shirazi ONNX model is
+  trained and packaged, the detector honestly listens for the legacy phrase
+  "Hey Jarvis" (see effective_listening_phrase()). This is a documented
+  limitation, not a bug — see docs/LEGACY_COMPAT.md.
 
 openwakeword ships small ONNX models (a few MB each) and runs comfortably on a
-CPU. The pretrained wake phrase used here is "Hey Jarvis".
+CPU.
 """
 from __future__ import annotations
 
@@ -24,8 +35,56 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-# Pretrained openwakeword model that listens for "Hey Jarvis".
+# Pretrained openwakeword model id. This is the model's INTERNAL label — it
+# cannot be renamed without retraining the model, so it stays "hey_jarvis"
+# even though the product is now SHIRAZI. See docs/LEGACY_COMPAT.md.
 WAKE_MODEL = "hey_jarvis"
+
+# Branded target wake phrases (config-level, user-facing). These are what the
+# user configures via the `wake_words` config key and what the settings UI
+# displays. They are resolved to a real model through WAKE_WORD_ALIASES.
+BRANDED_WAKE_WORDS = ["hey_shirazi", "shirazi"]
+
+# Maps a configured (branded) wake phrase to the ONNX model that actually
+# listens for it. Until a Hey-Shirazi model exists, every branded phrase falls
+# back to the legacy model — which only hears the legacy phrase. This mapping
+# is the whole "Hey Shirazi" strategy for now: configurable, honest, and ready
+# the moment a real model ships (just point an alias at the new model id).
+WAKE_WORD_ALIASES = {
+    "hey_shirazi": WAKE_MODEL,
+    "shirazi": WAKE_MODEL,
+}
+
+# The phrase the detector ACTUALLY listens for today. UI strings must use
+# effective_listening_phrase(), never a hardcoded branded phrase, so the user
+# is never told to say something the model cannot hear.
+LEGACY_LISTENING_PHRASE = "Hey Jarvis"
+
+
+def effective_listening_phrase() -> str:
+    """The spoken phrase that will actually wake the assistant right now.
+
+    Returns the legacy phrase until a Hey-Shirazi ONNX model is packaged, at
+    which point this should return the branded phrase. Centralised here so
+    every user-facing string stays honest by construction.
+    """
+    return LEGACY_LISTENING_PHRASE
+
+
+def resolve_wake_model(configured_words: list[str] | None = None) -> str:
+    """Resolve configured wake phrases to the ONNX model id to load.
+
+    Always returns the legacy model today, but goes through the alias map so
+    a future Hey-Shirazi model slots in without touching callers. Logs nothing
+    itself — callers decide what the user should be told.
+    """
+    words = configured_words or BRANDED_WAKE_WORDS
+    for w in words:
+        model = WAKE_WORD_ALIASES.get(str(w).strip().lower())
+        if model:
+            return model
+    return WAKE_MODEL
+
 # Score in [0,1]; above this counts as a detection. Tunable per environment.
 DEFAULT_THRESHOLD = 0.5
 # Mic frames arrive at 16 kHz int16; this is just the detector's input rate.
@@ -146,7 +205,7 @@ class WakeWordDetector:
         self._ready = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="WakeWordThread")
         self._thread.start()
-        self._logger("Wake word: listening for 'Hey Jarvis'.")
+        self._logger(f"Wake word: listening for '{effective_listening_phrase()}'.")
         return True
 
     def stop(self) -> None:
@@ -187,9 +246,12 @@ class WakeWordDetector:
                 scores = self._model.predict(np.asarray(frame, dtype=np.int16))
                 score = 0.0
                 if isinstance(scores, dict):
-                    # match the jarvis model regardless of exact key suffix
+                    # match the legacy model's key regardless of exact suffix
+                    # ("hey_jarvis_v0.1" etc.); also accept a future
+                    # "shirazi" model key without code changes.
                     for k, v in scores.items():
-                        if "jarvis" in k.lower():
+                        kl = k.lower()
+                        if "jarvis" in kl or "shirazi" in kl:
                             score = max(score, float(v))
                     if score == 0.0 and scores:
                         score = max(float(v) for v in scores.values())

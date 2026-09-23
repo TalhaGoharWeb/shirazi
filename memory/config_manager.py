@@ -9,13 +9,33 @@ def get_base_dir() -> Path:
 
 BASE_DIR    = get_base_dir()
 CONFIG_DIR  = BASE_DIR / "config"
-CONFIG_FILE = CONFIG_DIR / "api_keys.json"
+CONFIG_FILE = CONFIG_DIR / "api_keys.json"      # secrets + user prefs (git-ignored)
+SETTINGS_FILE = CONFIG_DIR / "settings.json"    # committed non-secret defaults
+PROVIDERS_FILE = CONFIG_DIR / "providers.json"  # Phase 4 provider abstraction (skeleton)
+DEVICES_FILE = CONFIG_DIR / "devices.json"      # device registry (skeleton)
+
 
 def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 def config_exists() -> bool:
     return CONFIG_FILE.exists()
+
+
+def load_settings() -> dict:
+    """Non-secret defaults tier: config/settings.json (committed skeleton).
+
+    api_keys.json always wins — this is only the fallback layer, so a user
+    override is never clobbered by the shipped defaults.
+    """
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"Config warning: could not read settings.json: {e}")
+        return {}
 
 def save_api_keys(gemini_api_key: str) -> None:
     ensure_config_dir()
@@ -52,8 +72,14 @@ def is_configured() -> bool:
 
 
 def get_assistant_name() -> str:
-    """Return the configured assistant name, or 'JARVIS' if not set."""
-    return load_api_keys().get("assistant_name", "JARVIS") or "JARVIS"
+    """Return the configured assistant name, or 'SHIRAZI' if not set.
+
+    Precedence: api_keys.json (user) -> settings.json (shipped defaults).
+    """
+    name = load_api_keys().get("assistant_name")
+    if name:
+        return name
+    return load_settings().get("assistant_name", "SHIRAZI") or "SHIRAZI"
 
 
 def get_user_name() -> str:
@@ -70,7 +96,7 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             data = {}
-    data["assistant_name"] = assistant_name.strip() or "JARVIS"
+    data["assistant_name"] = assistant_name.strip() or "SHIRAZI"
     data["user_name"] = user_name.strip()
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
@@ -105,8 +131,39 @@ def save_voice(voice_name: str) -> None:
 
 
 def get_wake_word_enabled() -> bool:
-    """Whether local wake-word gating is on (assistant sleeps until 'Hey Jarvis')."""
+    """Whether local wake-word gating is on (assistant sleeps until the wake phrase)."""
     return load_api_keys().get("wake_word_enabled", False)
+
+
+# Branded target wake phrases. NOTE: these are the CONFIGURED phrases; the
+# phrase the detector can actually hear today is
+# core.wake_word.effective_listening_phrase() ("Hey Jarvis" until a
+# Hey-Shirazi ONNX model is packaged). See docs/LEGACY_COMPAT.md.
+DEFAULT_WAKE_WORDS = ["hey_shirazi", "shirazi"]
+
+
+def get_wake_words() -> list:
+    """Configured wake phrases (user-facing names), e.g. ["hey_shirazi", "shirazi"].
+
+    Precedence: api_keys.json -> settings.json -> DEFAULT_WAKE_WORDS.
+    Non-blocking, disableable via wake_word_enabled. Detection itself stays
+    fully local — mic audio is never streamed to the cloud for wake-word
+    detection (see core/wake_word.py).
+    """
+    raw = load_api_keys().get("wake_words")
+    if raw is None:
+        raw = load_settings().get("wake_words", DEFAULT_WAKE_WORDS)
+    if isinstance(raw, str):
+        raw = [raw]
+    words = [str(w).strip().lower() for w in raw] if isinstance(raw, list) else []
+    words = [w for w in words if w]
+    return words or list(DEFAULT_WAKE_WORDS)
+
+
+def save_wake_words(words: list) -> None:
+    """Persist the user's chosen wake phrases."""
+    words = [str(w).strip().lower() for w in (words or []) if str(w).strip()]
+    _save_flag("wake_words", words or list(DEFAULT_WAKE_WORDS))
 
 
 def save_wake_word_enabled(enabled: bool) -> None:

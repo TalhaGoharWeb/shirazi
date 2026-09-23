@@ -11,7 +11,7 @@ record, not a fix list — the migration work is scheduled for later phases.
 | Dashboard session PIN | In-memory `DashboardServer._pending_keys` (6 chars, 600 s TTL) | One-time use, expires. **Phase 2 added attempt rate-limiting** (see below). |
 | Dashboard bearer/device tokens | In-memory on server; browser `sessionStorage`/`localStorage` on phone | `secrets.token_urlsafe(32)`; revocable via `/api/revoke-devices`; lost on restart. |
 | Dashboard message crypto | AES-256-CBC, key = SHA-256(PIN ‖ fixed salt `JARVIS-DASHBOARD-v1`) | Fixed salt; no PBKDF2. Plaintext `text` payload also accepted on `/api/command` and `/ws`. |
-| Dashboard TLS | `config/certs/jarvis.key` + `jarvis.crt` (self-signed, chmod 600) | Git-ignored. HTTPS optional; default is plain HTTP on LAN. |
+| Dashboard TLS | `config/certs/shirazi.key` + `shirazi.crt` (self-signed, chmod 600) | Git-ignored. HTTPS optional; default is plain HTTP on LAN. |
 | OAuth tokens | `**/token*.json`, `**/client_secret*.json` | Git-ignored patterns; no such plugin ships in this repo. |
 
 **Key exposure note (verified statically):** the Gemini API key never reaches the
@@ -44,6 +44,7 @@ and plain-HTTP default.
 ## Operator guidance (until then)
 
 - Never commit `config/api_keys.json`, `config/certs/`, or any `token*.json`.
+- Phase 3 renamed the dashboard TLS pair to `shirazi.key`/`shirazi.crt`. A legacy `jarvis.key`/`jarvis.crt` pair is *reused* when present (so paired phones keep trusting the same certificate); a fresh pair is generated only when neither exists. See `docs/LEGACY_COMPAT.md`.
 - Never paste the API key or tokens into chat, logs, screenshots, or error
   reports. A QR pairing code on screen is a one-time 600-second secret — treat
   it as one.

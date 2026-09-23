@@ -1,5 +1,5 @@
-# ⚙️ MARK LIV (54)
-### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
+# 🤖 SHIRAZI
+### The Next-Gen Cross-Platform Personal AI Assistant — By FatihMakes
 
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/@FatihMakes)**
 
@@ -9,13 +9,13 @@ A real-time voice AI that can hear, see, speak, and control your computer — on
 
 ## ✨ Overview
 
-**MARK LIV is the release where JARVIS gets a face.** A holographic head sits at the centre of the HUD and **speaks your assistant's words with real lip-sync** — not a jaw flapping to the volume meter, but actual mouth shapes: lips closing on *m*, *b*, *p*, spreading on *i*, rounding on *u*. Brows ride the sentence, the eyes flick between fixation points, and it blinks. Turn the sound down and you can follow roughly what it just said.
+**SHIRAZI is the release where SHIRAZI gets a face.** A holographic head sits at the centre of the HUD and **speaks your assistant's words with real lip-sync** — not a jaw flapping to the volume meter, but actual mouth shapes: lips closing on *m*, *b*, *p*, spreading on *i*, rounding on *u*. Brows ride the sentence, the eyes flick between fixation points, and it blinks. Turn the sound down and you can follow roughly what it just said.
 
 It ships as **zero extra dependencies and one 25 KB asset**. The face is real measured human geometry; everything else — the skull, the rig, the lighting — is generated at startup and drawn in software, so it looks identical on a gaming rig and a 2013 laptop, with no GPU driver in the loop.
 
 The face is also the fastest status indicator in the app: it looks away while thinking, meets your eyes while listening, and lets its lids fall while asleep.
 
-Underneath, Mark LIV rebuilt how the assistant knows itself — what it is, what machine it runs on, what it can do and, new, **what it cannot do** — all assembled from the live system at session start rather than written into a prompt that goes stale.
+Underneath, Shirazi rebuilt how the assistant knows itself — what it is, what machine it runs on, what it can do and, new, **what it cannot do** — all assembled from the live system at session start rather than written into a prompt that goes stale.
 
 It's not just an assistant — it's an extension of your digital life.
 
@@ -34,20 +34,20 @@ It's not just an assistant — it's an extension of your digital life.
 | 🎚️ Push-to-Talk | Hold **Ctrl+Space** and the mic opens — closed the rest of the time. Truly global on Windows, window-scoped elsewhere |
 | 🔇 Self-Echo Guard | Never answers its own last sentence: the tail of its own voice is recognised and dropped without muting you |
 | 🪪 Runtime Self-Knowledge | Name, OS, abilities **and limits** are generated from the live system each session — rename it or add a plugin and it knows |
-| 🎙️ Wake Word | Local **"Hey Jarvis"** detection — sleeps until called, auto-sleeps after 2 min of silence, and never streams audio while asleep |
+| 🎙️ Wake Word | Local wake-word detection — target phrases "Hey Shirazi" / "Shirazi" (legacy "Hey Jarvis" model until a Hey-Shirazi model ships) — sleeps until called, auto-sleeps after 2 min of silence, and never streams audio while asleep |
 | ⚡ Instant Acknowledgment | Speaks a short, context-aware reply in **your language** the instant a longer task starts — no more silent waiting |
 | 🚀 Faster Live Engine | Runs on **Gemini 3.1 Flash Live** — roughly 2× faster time-to-first-word than the previous model |
 | 🧩 Self-Describing Skills | Actions and plugins share one shape (`TOOL` / `PLUGIN` dict + `run()`), auto-discovered at launch — adding a skill is a single file |
 | 🧠 Recallable Memory | No size limit and nothing silently forgotten — the prompt carries what fits, the rest is looked up on demand from a local search |
-| 👁️ Memory Panel | See every fact JARVIS has stored about you, when it learned it, and delete any of it in one click |
+| 👁️ Memory Panel | See every fact SHIRAZI has stored about you, when it learned it, and delete any of it in one click |
 | ↩️ Undo | Take back what the assistant did — files it moved, renamed, created or wrote, and settings it changed |
 | ⚠️ Real Confirmation | Shutdown, restart and WiFi wait for a button **you** press — the model cannot confirm its own irreversible actions |
 | 🎧 Audio Device Picker | Choose the microphone and speakers by name, filtered to the short list your OS shows — and measured, so every entry actually works |
 | 🔗 Session Continuity | A dropped connection, a voice change or a device change no longer wipes the conversation |
-| 🧩 Plugin System | Drop a single `.py` file into `plugins/` — JARVIS learns a new skill on next launch |
+| 🧩 Plugin System | Drop a single `.py` file into `plugins/` — SHIRAZI learns a new skill on next launch |
 | 🎙️ Real-time Voice | Ultra-low latency conversation in any language via Gemini Live API |
 | 🎨 Live Theming | Recolour the entire HUD from a hue wheel or hex — the avatar retints with it |
-| 〰️ Reactive HUD | Waveform pulses to real audio — your mic while listening, JARVIS while speaking |
+| 〰️ Reactive HUD | Waveform pulses to real audio — your mic while listening, SHIRAZI while speaking |
 | 🎙️ Voice Picker | Choose from 5 native Gemini voices and switch live from the UI — no restart |
 | ♾️ Unlimited Sessions | Sliding-window context compression — one conversation can last for hours |
 | 🖥️ System Control | Launch apps, adjust volume/brightness, WiFi, shortcuts, power — all by voice |
@@ -80,7 +80,7 @@ It's not just an assistant — it's an extension of your digital life.
 
 ---
 
-## 🆕 What's New in Mark LIV
+## 🆕 What's New in Shirazi
 
 No hardcoded language, no GPU requirement, no new dependencies — identical on Windows, macOS and Linux.
 
@@ -112,10 +112,10 @@ Brows ride the *phrase*, not the syllable, with a slow asymmetry between them. T
 #### ◉ Two HUDs, one toggle
 Not everyone wants a face looking back at them. ⚙ → **HUD** swaps the centrepiece between the animated head and a **reactor core** — a gauge ring, three arcs that turn at a rate the state sets, a spectrum ring driven by the real audio level, and a core that brightens with the voice. Both render in the same software painter and cost the same; the choice is taste, and it survives a restart.
 
-Nothing on the core moves for decoration. The rings speed up when JARVIS is thinking, the spikes are the actual waveform, and the colour is the state — the same language the face speaks, without the face.
+Nothing on the core moves for decoration. The rings speed up when SHIRAZI is thinking, the spikes are the actual waveform, and the colour is the state — the same language the face speaks, without the face.
 
 #### 🗣️ It answers before it works
-Some replies used to open with three or four seconds of silence: not because a tool was slow, but because JARVIS was still *writing the tool call* — a set of quiz questions, the findings from a contract. The tool was instant; the composing was not, and from the user's side those are the same thing.
+Some replies used to open with three or four seconds of silence: not because a tool was slow, but because SHIRAZI was still *writing the tool call* — a set of quiz questions, the findings from a contract. The tool was instant; the composing was not, and from the user's side those are the same thing.
 
 The rule is now about the silence rather than the tool: if a gap would form, say one sentence naming what you are starting, then do it. It applies to anything that takes a moment to run **or** a moment to write, without a list of which tools those are.
 
@@ -132,7 +132,7 @@ On **Windows** the chord is genuinely global: it works while any other applicati
 #### 🔇 It no longer talks itself into replying
 Writing audio to a device returns when the buffer *accepts* the sound, not when the speaker has finished with it — so for a moment after a reply "ends", it is still in the room. Streaming the microphone during that gap is how an assistant hears its own last sentence, decides it was addressed, and answers itself.
 
-Mark LIV holds a guard open across that gap, sized from the **device's own reported latency** rather than a guessed constant, so a machine with a large audio buffer gets a longer guard and one with a small buffer is not penalised. The microphone is **not muted** during it: both streams are reduced to band energies and as much of what was just played is subtracted from the microphone as fits, so only your assistant's own voice is dropped — replying the instant it stops still works.
+Shirazi holds a guard open across that gap, sized from the **device's own reported latency** rather than a guessed constant, so a machine with a large audio buffer gets a longer guard and one with a small buffer is not penalised. The microphone is **not muted** during it: both streams are reduced to band energies and as much of what was just played is subtracted from the microphone as fits, so only your assistant's own voice is dropped — replying the instant it stops still works.
 
 > Interrupting it mid-sentence by voice is built on the same machinery and is deliberately **switched off** in this release. It depends too much on the listener's room to ship without testing on real hardware.
 
@@ -147,7 +147,7 @@ All prompt wording lives in `core/prompt.txt` with `{tokens}` the app fills in �
 
 ### 🩹 Fixes
 * Answers were sometimes **logged and spoken twice** — the Live API re-sends the tail of a transcript across the several turn-completes a tool call produces. Now de-duplicated at both the chunk and the flush level.
-* Asking JARVIS to look at the screen produced **two different answers** — the flow made it speak once *before* the image arrived, so it improvised, and again after. The frame is now attached to the same exchange as its tool result: one turn, one answer, one fewer round trip.
+* Asking SHIRAZI to look at the screen produced **two different answers** — the flow made it speak once *before* the image arrived, so it improvised, and again after. The frame is now attached to the same exchange as its tool result: one turn, one answer, one fewer round trip.
 * Screen captures were **unlabelled**, so a screenshot of this app — which has a face in the middle of it — could be read as a photo of the user. Images now carry their source.
 * On a non-UTF-8 console (cp1254, cp1251, cp932…) the emoji in the status lines **crashed the session on startup**. Streams are reconfigured at launch, so it starts the same way in every locale.
 * The HUD kept rendering the avatar **while the window was hidden or minimised**. It now stops, and resumes mid-motion rather than snapping.
@@ -185,7 +185,7 @@ The part that is easy to get wrong: **a model cannot look something up if it doe
 
 ### ↩️ Undo — it can take back what it did
 
-JARVIS moves files, renames them, writes to them and changes your settings. None of that had a way back; if it misheard you, the only remedy was to fix it by hand.
+SHIRAZI moves files, renames them, writes to them and changes your settings. None of that had a way back; if it misheard you, the only remedy was to fix it by hand.
 
 Say **"undo"** — in any language — and it reverses its own last action:
 
@@ -215,13 +215,13 @@ if action in _DANGEROUS_ACTIONS:            # {"restart", "shutdown"}
 
 `confirmed` is a **tool parameter, which means the model fills it in.** Nothing stopped it sending `confirmed=yes` on the first call and nothing checked that a human was ever involved. It was a convention, not a gate. And its coverage was two actions — so `toggle_wifi`, which cuts the assistant's own connection to the Live API and therefore *cannot be asked to undo itself*, went through with no gate at all.
 
-The token is now issued by the interface. Shutdown, restart and WiFi put a banner on the HUD and **return immediately**; the action runs only if you press CONFIRM. Nothing blocks — JARVIS keeps talking while the banner is up — so this is **cheaper than the old gate**, which burned two tool round trips on every power command.
+The token is now issued by the interface. Shutdown, restart and WiFi put a banner on the HUD and **return immediately**; the action runs only if you press CONFIRM. Nothing blocks — SHIRAZI keeps talking while the banner is up — so this is **cheaper than the old gate**, which burned two tool round trips on every power command.
 
 > The split between the two mechanisms is about reversibility, not about how alarming a word sounds. Anything undoable is done at once; only the genuinely irreversible asks. An assistant that checks with you before turning the volume down is one you stop talking to.
 
 ### 🎧 It finally asks which microphone
 
-Both audio streams opened with no device argument at all, so they always took whatever the OS called "default" — and on Windows that *moves on its own* the moment you plug a headset in. "JARVIS can't hear me" almost always meant "JARVIS is listening to the webcam".
+Both audio streams opened with no device argument at all, so they always took whatever the OS called "default" — and on Windows that *moves on its own* the moment you plug a headset in. "SHIRAZI can't hear me" almost always meant "SHIRAZI is listening to the webcam".
 
 ⚙ → **🎧 AUDIO DEVICES** lets you pick the microphone and the speakers by name. Two things matter more than the dropdown:
 
@@ -278,8 +278,10 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-LIV.git
-cd Mark-LIV
+# Shirazi continues the Mark-LIV codebase (upstream origin:
+# https://github.com/FatihMakes/Mark-LIV) under its new brand.
+# From your local clone:
+cd shirazi
 python setup.py        # installs deps for YOUR OS + the browser automation engine
 python main.py
 ```
@@ -296,7 +298,7 @@ python main.py
 | --- | --- |
 | **OS** | Windows 10/11, macOS, or Linux |
 | **Python** | 3.11, 3.12 or 3.13 |
-| **Microphone** | Required for voice interaction (and for the "Hey Jarvis" wake word) |
+| **Microphone** | Required for voice interaction (and for the wake word) |
 | **Speakers** | Required for voice replies |
 | **API Key** | Free Gemini API key (entered on first launch → `config/api_keys.json`) |
 | **GPU** | **Not required.** The avatar is rendered in software |
@@ -307,13 +309,13 @@ python main.py
 ## 🗂️ Project Structure
 
 ```
-Mark LIV/
+Shirazi/
 ├── main.py                   # Core loop — Gemini Live session, audio I/O, viseme extraction, tool dispatch
 ├── ui.py                     # PyQt6 HUD — avatar canvas, waveform, log panel, settings drawer, camera feed
 ├── setup.py                  # OS-aware installer (skips wrong-OS dependencies, checks your Python)
 ├── .gitignore                # Keeps your API key, TLS key and memories out of the repository
 ├── plugins/
-│   ├── quiz.py               # Interactive quiz — JARVIS writes the questions, you answer on screen
+│   ├── quiz.py               # Interactive quiz — SHIRAZI writes the questions, you answer on screen
 │   ├── document_review.py    # Contracts and policies in plain language, ordered by what matters
 │   ├── _google_core.py       # Shared OAuth for the Gmail/Calendar plugins (not a plugin itself)
 │   ├── _printer_core.py      # Shared printer connectivity (not a plugin itself)
@@ -357,7 +359,7 @@ Mark LIV/
 │   ├── audio_devices.py      # Microphone / speaker list — filtered, measured, resolved by name
 │   ├── plugin_loader.py      # Plugin engine — discovery, validation, crash isolation
 │   ├── action_loader.py      # Bundled-action engine — the built-in twin of plugin_loader
-│   └── wake_word.py          # Local "Hey Jarvis" detector — own thread, offline, opt-in
+│   └── wake_word.py          # Local wake-word detector — own thread, offline, opt-in (phrases: "Hey Shirazi"/"Shirazi"; legacy model for now)
 └── config/
     ├── api_keys.json         # API key, name, voice, colour, toggles — created on first launch (git-ignored)
     └── certs/                # Self-signed TLS pair for the phone dashboard — generated locally (git-ignored)
@@ -398,8 +400,8 @@ Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licens
 
 ## 👤 Connect with the Creator
 
-Engineered by a developer building a real-world JARVIS-style assistant.
-⭐ **Star the repository to support the journey to Mark 100.**
+Engineered by a developer building a real-world SHIRAZI-style assistant.
+⭐ **Star the repository to support the Shirazi journey.**
 
 | Platform | Link |
 | --- | --- |

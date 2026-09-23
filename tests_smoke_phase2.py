@@ -57,6 +57,6 @@ if __name__ == "__main__":
     import main
 
     print("main.py import OK; LIVE_MODEL =", main.LIVE_MODEL)
-    print("JarvisLive class:", main.JarvisLive)
+    print("ShiraziLive class:", main.ShiraziLive)
     print("main() callable:", callable(main.main))
     print("TOOL_DECLARATIONS:", len(main.TOOL_DECLARATIONS))

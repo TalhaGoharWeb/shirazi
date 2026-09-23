@@ -107,10 +107,24 @@ def _real_profile_dir(browser: str) -> str:
             print(f"[Browser] ✅ Real profile found for {browser}: {p}")
             return str(p)
 
-    fallback = home / ".jarvis_profiles" / browser
+    fallback = _automation_profiles_base() / browser
     fallback.mkdir(parents=True, exist_ok=True)
     print(f"[Browser] ⚠️  Real profile not found for {browser}, using: {fallback}")
     return str(fallback)
+
+def _automation_profiles_base() -> Path:
+    """Base dir for persistent automation browser profiles.
+
+    Shirazi uses ~/.shirazi_profiles; a pre-rebrand ~/.jarvis_profiles is
+    reused if present so existing automation sessions/cookies survive the
+    upgrade (see docs/LEGACY_COMPAT.md).
+    """
+    new = Path.home() / ".shirazi_profiles"
+    legacy = Path.home() / ".jarvis_profiles"
+    if not new.exists() and legacy.exists():
+        return legacy
+    return new
+
 
 def _firefox_profile_dir() -> Optional[str]:
     home = Path.home()
@@ -533,7 +547,7 @@ class _BrowserSession:
 
         if engine_name == "firefox":
             profile = _firefox_profile_dir() or str(
-                Path.home() / ".jarvis_profiles" / "firefox"
+                _automation_profiles_base() / "firefox"
             )
             kwargs: dict = {
                 "headless":    False,
@@ -547,17 +561,17 @@ class _BrowserSession:
             try:
                 self._context = await engine_obj.launch_persistent_context(profile, **kwargs)
             except Exception as e:
-                print(f"[Browser] Firefox real profile failed ({e}), using JARVIS profile")
-                jarvis = str(Path.home() / ".jarvis_profiles" / "firefox_jarvis")
-                Path(jarvis).mkdir(parents=True, exist_ok=True)
-                self._context = await engine_obj.launch_persistent_context(jarvis, **kwargs)
+                print(f"[Browser] Firefox real profile failed ({e}), using SHIRAZI profile")
+                shirazi = str(_automation_profiles_base() / "firefox_shirazi")
+                Path(shirazi).mkdir(parents=True, exist_ok=True)
+                self._context = await engine_obj.launch_persistent_context(shirazi, **kwargs)
 
             self._page = await self._adopt_page()
             print(f"[Browser] ✅ Firefox launched")
             return
 
         if engine_name == "webkit":
-            safari_profile = str(Path.home() / ".jarvis_profiles" / "safari")
+            safari_profile = str(_automation_profiles_base() / "safari")
             Path(safari_profile).mkdir(parents=True, exist_ok=True)
             kwargs = {
                 "headless":    False,
@@ -609,16 +623,16 @@ class _BrowserSession:
 
         # The real profile could not be opened (browser already open / locked
         # profile / newer Chrome versions block the real profile under
-        # automation). Fall back to a persistent JARVIS automation profile —
+        # automation). Fall back to a persistent SHIRAZI automation profile —
         # accounts logged in here once stay logged in on later sessions too.
-        jarvis_profile = str(Path.home() / ".jarvis_profiles" / self.browser_name)
-        Path(jarvis_profile).mkdir(parents=True, exist_ok=True)
-        print(f"[Browser] Retrying with JARVIS profile: {jarvis_profile}")
+        shirazi_profile = str(_automation_profiles_base() / self.browser_name)
+        Path(shirazi_profile).mkdir(parents=True, exist_ok=True)
+        print(f"[Browser] Retrying with SHIRAZI profile: {shirazi_profile}")
 
         try:
-            self._context = await engine_obj.launch_persistent_context(jarvis_profile, **kwargs)
+            self._context = await engine_obj.launch_persistent_context(shirazi_profile, **kwargs)
             self._page = await self._adopt_page()
-            print(f"[Browser] ✅ Launched [{label}] with JARVIS profile "
+            print(f"[Browser] ✅ Launched [{label}] with SHIRAZI profile "
                   f"(sign-ins persist across sessions)")
         except Exception as e2:
             raise RuntimeError(f"Could not launch {self.browser_name}: {e2}") from e2
@@ -805,7 +819,7 @@ class _BrowserSession:
     async def screenshot(self, path: str = None) -> str:
         page = await self._get_page()
         try:
-            save_path = path or str(Path.home() / "Desktop" / "jarvis_screenshot.png")
+            save_path = path or str(Path.home() / "Desktop" / "shirazi_screenshot.png")
             await page.screenshot(path=save_path, full_page=False)
             return f"Screenshot saved: {save_path}"
         except Exception as e:

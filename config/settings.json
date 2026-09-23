@@ -1,0 +1,23 @@
+{
+  "_comment": "Shirazi non-secret defaults (Phase 3 centralized config). This file is COMMITTED \u2014 never put secrets here; they belong in config/api_keys.json (git-ignored) or environment variables (see .env.example). Precedence: api_keys.json (user) wins over this file (shipped defaults).",
+  "assistant_name": "SHIRAZI",
+  "brand": "shirazi",
+  "brand_version": "3",
+  "hud_style": "face",
+  "input_device": "",
+  "llm_model": "llama3.2",
+  "llm_provider": "ollama",
+  "llm_url": "http://localhost:11434",
+  "media_resolution": "medium",
+  "morning_brief_enabled": true,
+  "output_device": "",
+  "proactive_audio": true,
+  "push_to_talk_enabled": false,
+  "thinking_enabled": false,
+  "voice_name": "Charon",
+  "wake_word_enabled": false,
+  "wake_words": [
+    "hey_shirazi",
+    "shirazi"
+  ]
+}
