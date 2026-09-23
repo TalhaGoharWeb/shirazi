@@ -4720,6 +4720,49 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    # ── Phase 5: avatar style cycling + telemetry (quick drawer) ─────────
+    def _cycle_avatar_style(self) -> None:
+        """Quick-drawer style button: cycle headwear default → kofia → turban → kufi."""
+        try:
+            from memory.config_manager import get_avatar_style, save_avatar_style
+            cur = get_avatar_style()
+        except Exception:
+            cur, save_avatar_style = "default", None
+        styles = ("default", "kofia", "turban", "kufi")
+        nxt = styles[(styles.index(cur) + 1) % len(styles)] if cur in styles else "default"
+        if save_avatar_style is not None:
+            try:
+                save_avatar_style(nxt)
+            except Exception:
+                pass
+        try:
+            self.hud.set_avatar_style(nxt)
+        except Exception:
+            pass
+        self._refresh_style_btn()
+
+    def _refresh_style_btn(self) -> None:
+        """Show the current avatar style on the quick-drawer button."""
+        try:
+            from memory.config_manager import get_avatar_style
+            cur = get_avatar_style()
+        except Exception:
+            cur = "default"
+        try:
+            self._style_btn.setText(
+                "\U0001f3ad  " + t("avatar_style_label").upper() + f": {cur.upper()}")
+        except Exception:
+            pass
+
+    def _open_telemetry(self) -> None:
+        """Quick-drawer telemetry button: show the live system-metrics overlay."""
+        try:
+            ov = TelemetryOverlay(parent=self.centralWidget())
+            self._centre_overlay(ov)
+            self._telemetry_overlay = ov      # keep a reference so it isn't GC'd
+        except Exception:
+            pass
+
     def _toggle_drawer(self, checked: bool):
         if checked:
             self._refresh_wake_btns()   # resolve wake state on open (lazy)
