@@ -97,7 +97,24 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
+
+
+def _configured_live_model() -> str:
+    """The Live voice model, from config/providers.json (gemini_live.live_model),
+    falling back to gemini.live_model, then the shipped default. Never raises."""
+    try:
+        _pcfg = json.loads((BASE_DIR / "config" / "providers.json").read_text(encoding="utf-8"))
+        _prov = (_pcfg.get("providers") or {})
+        for _section in ("gemini_live", "gemini"):
+            _m = (_prov.get(_section) or {}).get("live_model")
+            if _m:
+                return str(_m)
+    except Exception:
+        pass
+    return "models/gemini-3.1-flash-live-preview"
+
+
+LIVE_MODEL          = _configured_live_model()
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000 
 RECEIVE_SAMPLE_RATE = 24000
@@ -628,6 +645,20 @@ class ShiraziLive:
             logger=lambda msg: print(f"[Plugins] {msg}"),
             notify=lambda msg: self.ui.write_log(f"SYS: {msg}"),
         )
+
+        # Phase 4: central tool registry (adapter over inline + actions + plugins).
+        # The permission gate in _execute_tool and the system prompt both read
+        # this one list, so the model is only ever offered tools the engine knows.
+        from core.tools import build_registry as _build_tool_registry
+        try:
+            self._tool_registry = _build_tool_registry(
+                inline=TOOL_DECLARATIONS,
+                actions=self._action_registry,
+                plugins=self._plugin_registry,
+            )
+        except Exception as _e:
+            print(f"[SHIRAZI] tool registry failed to build ({_e}) - continuing without it")
+            self._tool_registry = None
         self.ui.get_plugins = self._plugin_registry.list_for_ui
         self.ui.get_plugin_settings = self._plugin_registry.settings_schemas  # ⚙ settings tab
         self.ui.request_say = self.plugin_say   # plugins: mid-task speech channel
@@ -1117,6 +1148,31 @@ class ShiraziLive:
         name = fc.name
         args = dict(fc.args or {})
 
+
+        # Phase 4: permission gate (core/permissions.py).
+        # EVERY tool call passes check() before dispatch. SAFE/READ_ONLY run;
+        # USER_CONFIRMATION parks behind the on-screen banner (issued by the
+        # interface, never by the model); PRIVILEGED is denied unless
+        # developer mode is on (and still needs the banner). A tool the engine
+        # has never seen is USER_CONFIRMATION (fail closed).
+        _confirmed_ids = getattr(self, "_confirmed_tool_calls", None)
+        if _confirmed_ids is None:
+            _confirmed_ids = self._confirmed_tool_calls = set()
+        if fc.id not in _confirmed_ids:
+            from core import permissions as _perm_gate
+            _gate = _perm_gate.check(name, args)
+            if not _gate.allowed:
+                _denied = f"Denied by the permission engine: {_gate.reason}"
+                self.ui.write_log(f"SYS: {_denied}")
+                print(f"[SHIRAZI] DENIED {name}: {_denied}")
+                if not self.ui.muted:
+                    self.ui.set_state("LISTENING")
+                return types.FunctionResponse(
+                    id=fc.id, name=name,
+                    response={"result": _denied})
+            if _gate.needs_confirmation:
+                return await self._execute_tool_gated(fc, name, args, _gate)
+
         print(f"[SHIRAZI] 🔧 {name}  {args}")
         self.ui.set_state("THINKING")
 
@@ -1283,6 +1339,56 @@ class ShiraziLive:
             response={"result": result},
             **_extra
         )
+
+    async def _execute_tool_gated(self, fc, name, args, gate) -> types.FunctionResponse:
+        """Run a USER_CONFIRMATION tool behind the on-screen banner (Phase 4).
+
+        The tool NEVER runs before the user presses CONFIRM: confirm.request()
+        returns immediately with the pending sentence, which is handed back to
+        the model so it asks the user out loud. On CONFIRM the stored callable
+        re-enters _execute_tool on a worker thread with this call id marked
+        pre-authorized, then speaks the outcome. On CANCEL nothing runs.
+        """
+        from core import confirm as _confirm_gate
+        self._confirmed_tool_calls.add(fc.id)
+
+        def _run_after_confirm():
+            try:
+                return _run_after_confirm_inner()
+            finally:
+                self._confirmed_tool_calls.discard(fc.id)
+
+        def _run_after_confirm_inner():
+            try:
+                _fut = asyncio.run_coroutine_threadsafe(
+                    self._execute_tool(fc), self._loop)
+                _resp = _fut.result(timeout=300)
+                _text = ""
+                try:
+                    _text = str((_resp.response or {}).get("result", ""))
+                except Exception:
+                    pass
+                if _text and not _text.startswith("[CONFIRMATION_PENDING]"):
+                    self.speak(f"{name} done. {_text[:300]}")
+                return _text or "Done."
+            except Exception as e:  # noqa: BLE001 - surfaced to the user
+                self.speak_error(name, e)
+                return f"Tool '{name}' failed after confirmation: {e}"
+
+        _detail = f"{name} {json.dumps(args, ensure_ascii=False)[:300]}"
+        if gate.reason:
+            _detail += "\n\n" + gate.reason
+        _pending_sentence = _confirm_gate.request(
+            key=f"tool:{name}:{fc.id}",
+            title=f"Allow '{name}'?",
+            detail=_detail,
+            run=_run_after_confirm,
+        )
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
+        return types.FunctionResponse(
+            id=fc.id, name=name,
+            response={"result": _pending_sentence})
 
     async def _send_realtime(self):
         while True:
@@ -2062,6 +2168,30 @@ class ShiraziLive:
             log  = self.ui.write_log,
         )
         set_trim_notifier(self.ui.write_log)
+
+        # Phase 4: wire the architecture services. Each is fault-isolated -
+        # a failure here degrades one service, never the boot.
+        try:
+            _user_cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
+        except Exception:
+            _user_cfg = {}
+        try:
+            from core import permissions as _perm4
+            _perm4.configure(_user_cfg)  # developer_mode / safe_mode flags
+        except Exception as _e:
+            print(f"[SHIRAZI] permissions failed to configure ({_e})")
+        try:
+            from core import devices as _devices4
+            self._device_manager = _devices4.DeviceManager()
+            self._device_manager.refresh_background()  # never on the UI thread
+        except Exception as _e:
+            print(f"[SHIRAZI] device manager failed to start ({_e})")
+            self._device_manager = None
+        try:
+            import i18n as _i18n4
+            _i18n4.set_language(str(_user_cfg.get("language") or "en"))
+        except Exception as _e:
+            print(f"[SHIRAZI] i18n failed to initialize ({_e})")
 
         # Tell the device picker the exact rates the streams open at, from the
         # constants that actually open them — so it can never list a device that

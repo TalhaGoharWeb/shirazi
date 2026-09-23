@@ -1,37 +1,73 @@
 {
-  "_comment": "Shirazi AI provider registry \u2014 SKELETON for Phase 4 (provider abstraction). Not wired into any code path yet; keys are empty placeholders on purpose. Free-first: providers are ordered by cost (free tiers first). NEVER commit real API keys here \u2014 use config/api_keys.json (git-ignored) or environment variables.",
+  "_comment": "Shirazi AI provider registry — WIRED in Phase 4 (core/providers/registry.py). The chain is tried left to right: primary → fallback → offline leg. Keys are resolved as: environment variable (key_env) first, then config/api_keys.json (key_config) — NEVER commit real keys here.",
+  "_tiers": "Tier labels are honest cost labels: 'Local (Free)' = runs on this machine, no key, no quota. 'Free API Tier' = vendor free tier: keyed, QUOTA-LIMITED and rate-limited — never unlimited. 'Optional Paid Provider' = needs the user's own paid key.",
+  "chain": [
+    "gemini",
+    "openrouter",
+    "ollama"
+  ],
   "default_provider": "gemini",
   "providers": {
     "gemini": {
       "enabled": true,
+      "fast_models": [
+        "gemini-3.6-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash"
+      ],
       "key_config": "gemini_api_key",
       "key_env": "GEMINI_API_KEY",
       "live_model": "models/gemini-3.1-flash-live-preview",
-      "note": "Primary today: Gemini Live voice session + one-shot ladder (core/gemini.py).",
-      "text_models": [
+      "note": "Primary today: Gemini Live voice session (main.py ShiraziLive) + one-shot text ladder (core/gemini.py). 3.x leads; 2.5 pins are DEPRECATED fallbacks — Google retires Gemini 2.5 REST on 2026-10-16.",
+      "search_models": [
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash"
+      ],
+      "smart_models": [
+        "gemini-3.6-flash",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite"
-      ]
+      ],
+      "text_models": [
+        "gemini-3.6-flash",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite"
+      ],
+      "tier": "Free API Tier"
+    },
+    "gemini_live": {
+      "enabled": true,
+      "key_config": "gemini_api_key",
+      "key_env": "GEMINI_API_KEY",
+      "live_model": "models/gemini-3.1-flash-live-preview",
+      "note": "Voice path. Phase 4: interface + config only — the session lifecycle is implemented by main.py ShiraziLive (see core/providers/gemini_live.py, documented limitation).",
+      "tier": "Free API Tier"
     },
     "groq": {
       "enabled": false,
+      "free_only": true,
       "key_config": "groq_api_key",
       "key_env": "GROQ_API_KEY",
       "models": [],
-      "note": "Phase 4: free-tier chat/text fallback."
+      "note": "Reserved slot for a future provider (see core/providers/future.py for the extension hook). Disabled until registered.",
+      "tier": "Free API Tier"
     },
     "ollama": {
       "enabled": true,
       "model": "llama3.2",
-      "note": "Local, keyless. Used today by code_helper/dev_agent via core/llm_client.py.",
+      "note": "Offline leg: fully local, keyless, no quota. Needs the model pulled locally (ollama pull llama3.2). Used today by code_helper/dev_agent via core/llm_client.py.",
+      "tier": "Local (Free)",
       "url": "http://localhost:11434"
     },
     "openrouter": {
-      "enabled": false,
+      "enabled": true,
+      "free_only": true,
       "key_config": "openrouter_api_key",
       "key_env": "OPENROUTER_API_KEY",
       "models": [],
-      "note": "Phase 4: free-tier model router fallback."
+      "note": "Fallback chain leg: OpenRouter ':free' endpoints only (free_only=true — a non-:free model id is refused, never billed). Rate/quota limited. Add model ids from openrouter.ai/models that end in ':free' to enable. Needs OPENROUTER_API_KEY or api_keys.json entry.",
+      "tier": "Free API Tier"
     }
   }
 }

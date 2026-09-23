@@ -77,11 +77,50 @@ else:
     _BASE = Path(__file__).resolve().parent.parent
 
 _KEY_FILE = _BASE / "config" / "api_keys.json"
+_PROVIDERS_FILE = _BASE / "config" / "providers.json"
 
 # Ladders, tried left to right. Change a model HERE and the whole app follows.
+# Since Phase 4 the ladders are *configurable*: config/providers.json's
+# "gemini" section may set "fast_models", "smart_models" and "search_models".
+# The defaults below are the sane 3.x ladder. The 2.5-era pins survive only
+# as deprecated fallbacks — Google retires Gemini 2.5 REST on 2026-10-16.
 FAST = "fast"      # short classification, extraction, one-line decisions
 SMART = "smart"    # reasoning, generation, long documents, images
 SEARCH = "search"  # grounded search — REST only, see below
+
+# Sane 3.x defaults. 2.5 pins sit LAST, tried only when 3.x is unavailable —
+# and core/providers logs a deprecation warning when one actually answers.
+_DEFAULT_FAST = ("gemini-3.6-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash")
+_DEFAULT_SMART = ("gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite")
+_DEFAULT_SEARCH = ("gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash")
+
+
+def _provider_models(*keys: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Read a model list from config/providers.json's gemini section."""
+    try:
+        data = json.loads(_PROVIDERS_FILE.read_text(encoding="utf-8"))
+        models = (data.get("providers") or {}).get("gemini") or {}
+        for key in keys:
+            value = models.get(key)
+            if value:
+                return tuple(str(m) for m in value)
+    except Exception:
+        pass
+    return default
+
+
+def _build_ladders() -> dict[str, tuple[str, ...]]:
+    fast = _provider_models("fast_models", "text_models", default=_DEFAULT_FAST)
+    smart = _provider_models("smart_models", "text_models", default=_DEFAULT_SMART)
+    search = _provider_models("search_models", default=_DEFAULT_SEARCH)
+    return {
+        # Grounded search needs response.candidates[...].grounding_metadata,
+        # which a Live turn does not produce. REST only, and it says so rather
+        # than silently returning an answer with no sources behind it.
+        FAST: (LIVE,) + fast,
+        SMART: (LIVE,) + smart,
+        SEARCH: search,
+    }
 
 # A rung that means "ask the Live model instead", through a short throwaway
 # session rather than the REST text API.
@@ -113,14 +152,58 @@ SEARCH = "search"  # grounded search — REST only, see below
 #     on REST — see SEARCH.
 LIVE = "live"
 
-_LADDERS = {
-    FAST: (LIVE, "gemini-2.5-flash-lite", "gemini-2.5-flash"),
-    SMART: (LIVE, "gemini-2.5-flash", "gemini-2.5-flash-lite"),
-    # Grounded search needs response.candidates[...].grounding_metadata, which a
-    # Live turn does not produce. REST only, and it says so rather than silently
-    # returning an answer with no sources behind it.
-    SEARCH: ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"),
-}
+# Milliseconds. Not a preference: the API rejects anything under ten seconds
+# with "Minimum allowed deadline is 10s", so this is the tightest bound it will
+# accept. Callers with a long job (a whole document, a big image) pass more.
+# (Defined before the ladders: call_once() below uses it as a default arg.)
+DEFAULT_TIMEOUT_MS = 10_000
+MIN_TIMEOUT_MS = 10_000
+
+_LADDERS = _build_ladders()
+
+
+def reload_ladders() -> dict[str, tuple[str, ...]]:
+    """Re-read config/providers.json into the ladders (settings UI calls this
+    after a model-list edit). Returns the new ladders."""
+    global _LADDERS
+    _LADDERS = _build_ladders()
+    return _LADDERS
+
+
+def default_text_ladder() -> list[str]:
+    """The config-driven REST rung list for core/providers/gemini.py.
+
+    No LIVE rung — the Live path is covered by GeminiLiveProvider.
+    Kept separate so the provider can map each model's failure to the
+    ProviderError taxonomy instead of swallowing it."""
+    return [m for m in _LADDERS.get(SMART, ()) if m != LIVE]
+
+
+def cool_model(model: str) -> None:
+    """Mark a model as quota-exhausted (public wrapper for core/providers)."""
+    _cool(model)
+
+
+def call_once(contents, model: str, config=None,
+              timeout_ms: int = DEFAULT_TIMEOUT_MS, key: str = "") -> str:
+    """One REST attempt at ONE model. Returns the reply text, or raises —
+    never swallows the error, unlike call() which walks a ladder.
+
+    Used by core/providers/gemini.py so each rung's failure maps to the
+    ProviderError taxonomy (auth / rate-limit / retired model / network).
+    """
+    resolved_key = key or api_key()
+    if not resolved_key:
+        raise RuntimeError("no Gemini API key is configured")
+    cl = client(timeout_ms=timeout_ms, key=resolved_key)
+    kwargs = {"model": model, "contents": contents}
+    if config is not None:
+        kwargs["config"] = config
+    resp = cl.models.generate_content(**kwargs)
+    text = (getattr(resp, "text", None) or "").strip()
+    if not text:
+        raise RuntimeError(f"{model}: empty reply")
+    return text
 
 # The Live model to use for one-shot calls. main.py owns the real one; this is
 # only the fallback for when this module is imported without it (tests).
@@ -157,12 +240,6 @@ _ONE_SHOT_SYSTEM = (
     "emit that one word. Preserve the exact spelling, punctuation, capitals "
     "and whitespace of anything you are asked to copy or return."
 )
-
-# Milliseconds. Not a preference: the API rejects anything under ten seconds
-# with "Minimum allowed deadline is 10s", so this is the tightest bound it will
-# accept. Callers with a long job (a whole document, a big image) pass more.
-DEFAULT_TIMEOUT_MS = 10_000
-MIN_TIMEOUT_MS = 10_000
 
 _key_lock = threading.Lock()
 _cached_key: str | None = None

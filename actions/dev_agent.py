@@ -301,6 +301,19 @@ def _open_vscode(project_dir: Path) -> bool:
     return False
 
 def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
+    # Phase 4: MANDATORY shell gate. An LLM-generated command string reaches the OS
+    # only through core/permissions.request_shell_execution(), which parks the exact
+    # command behind the interface-issued CONFIRM/CANCEL banner. No banner bound
+    # (headless/early boot) -> refused, never run. See core/permissions.py.
+    from core import permissions as _perm
+    return _perm.request_shell_execution(
+        run_command,
+        run=lambda: _run_project_impl(run_command, project_dir, timeout),
+        context=f"Requested by dev_agent in {project_dir} (timeout {timeout}s).",
+    )
+
+
+def _run_project_impl(run_command: str, project_dir: Path, timeout: int = 30) -> str:
     print(f"[DevAgent] 🚀 Running: {run_command}")
     try:
         parts = run_command.split()
