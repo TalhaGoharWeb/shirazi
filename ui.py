@@ -348,7 +348,11 @@ class _SysMetrics:
         if self._pynvml_ok is not False:
             try:
                 if self._pynvml_h is None:
-                    import pynvml  # type: ignore
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=FutureWarning,
+                                              message=".*pynvml.*")
+                        import pynvml  # type: ignore
                     pynvml.nvmlInit()
                     self._pynvml    = pynvml
                     self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
@@ -4625,6 +4629,7 @@ class MainWindow(QMainWindow):
         lang_cap.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
         lang_cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         lay.addWidget(lang_cap)
+        self._lang_cap = lang_cap
         self._lang_box = QComboBox()
         self._lang_box.setFont(QFont("Courier New", 7))
         self._lang_box.setFixedHeight(26)
@@ -4685,6 +4690,35 @@ class MainWindow(QMainWindow):
 
         w.adjustSize()
         return w
+
+    def _on_language_changed(self, index: int) -> None:
+        """Quick-drawer language picker: switch catalog, persist, apply RTL."""
+        try:
+            code = str(self._lang_box.itemData(index) or "en")
+        except Exception:
+            return
+        try:
+            set_language(code)                  # future t() lookups use it
+        except Exception:
+            pass
+        try:
+            from memory.config_manager import save_language
+            save_language(code)                 # survive restarts
+        except Exception:
+            pass
+        try:                                    # RTL layout for Urdu / Arabic
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                app.setLayoutDirection(
+                    Qt.LayoutDirection.RightToLeft if is_rtl(code)
+                    else Qt.LayoutDirection.LeftToRight)
+        except Exception:
+            pass
+        try:                                    # immediate drawer feedback
+            self._lang_cap.setText("\U0001f310  " + t("language_label").upper())
+        except Exception:
+            pass
 
     def _toggle_drawer(self, checked: bool):
         if checked:
