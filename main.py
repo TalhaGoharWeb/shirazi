@@ -72,6 +72,7 @@ from memory.config_manager     import (
     get_brief_enabled, get_media_resolution, get_proactive_audio_enabled,
     get_push_to_talk_enabled, get_thinking_enabled, get_turn_tuning, get_voice,
     get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
+    get_mic_gain, get_master_volume,
 )
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
@@ -129,17 +130,15 @@ _LEVEL_FULL  = 2600.0
 
 def _pcm_level(samples) -> float:
     """Map a block of int16 PCM samples to a 0.0–1.0 loudness level for the HUD
-    waveform. Returns 0.0 on empty/invalid input so it can never raise."""
+    waveform. Returns 0.0 on empty/invalid input so it can never raise.
+
+    Delegates to core/formant.py (extracted from this module; same math,
+    same floor/full calibration)."""
     try:
-        x = np.asarray(samples, dtype=np.float32)
-        if x.size == 0:
-            return 0.0
-        rms = float(np.sqrt(np.mean(x * x)))
+        from core.formant import pcm_level
+        return pcm_level(samples)
     except Exception:
         return 0.0
-    if rms <= _LEVEL_FLOOR:
-        return 0.0
-    return min(1.0, (rms - _LEVEL_FLOOR) / (_LEVEL_FULL - _LEVEL_FLOOR))
 
 
 # ── Viseme extraction ─────────────────────────────────────────────────────────
@@ -178,57 +177,12 @@ def _pcm_visemes(samples, sr: int = 24000):
 
     Returns [] on anything unexpected — the mouth falls back to loudness-only
     articulation rather than the caller having to handle an error.
-    """
+
+    Delegates to core/formant.py (extracted from this module; F1→openness,
+    F2→width, hiss damping, same 1024/480 windowing)."""
     try:
-        x = np.asarray(samples, dtype=np.float32)
-        if x.size < _VIS_WIN:
-            return []
-        win = np.hanning(_VIS_WIN).astype(np.float32)
-        freqs = np.fft.rfftfreq(_VIS_WIN, 1.0 / sr)
-        b_f1_lo = (freqs >= 150) & (freqs < 450)     # F1 of close vowels
-        b_f1_hi = (freqs >= 450) & (freqs < 1100)    # F1 of open vowels
-        b_f2_bk = (freqs >= 600) & (freqs < 1300)    # F2 of rounded vowels
-        b_f2_fr = (freqs >= 1700) & (freqs < 3200)   # F2 of spread vowels
-        b_hiss = (freqs >= 3800) & (freqs < 8000)    # fricatives
-
-        # One frame per hop across the *whole* block. Stepping only while a full
-        # window fits stopped 1024 - 480 samples short of the end, so a 200 ms
-        # batch yielded 160 ms of schedule: the mouth ran out of frames before
-        # the audio ran out of sound, and each batch no longer lined up with the
-        # end of the one before it. Losing 20 % of every batch is most of why
-        # the mouth did not track the words.
-        out = []
-        for start in range(0, x.size, _VIS_HOP):
-            # The level gates closures, so it is measured over exactly this
-            # 20 ms and never looks ahead. The spectrum needs a longer window
-            # to resolve formants and may be short-filled at the very end.
-            level = _pcm_level(x[start:start + _VIS_HOP])
-            seg = x[start:start + _VIS_WIN]
-            if seg.size < _VIS_WIN:
-                seg = np.concatenate([seg, np.zeros(_VIS_WIN - seg.size,
-                                                    dtype=np.float32)])
-            if level <= 0.0:
-                out.append((0.0, 0.0, 0.0))
-                continue
-            mag = np.abs(np.fft.rfft((seg - seg.mean()) * win))
-            f1l, f1h = float(mag[b_f1_lo].sum()), float(mag[b_f1_hi].sum())
-            f2b, f2f = float(mag[b_f2_bk].sum()), float(mag[b_f2_fr].sum())
-            hiss = float(mag[b_hiss].sum())
-
-            openness = f1h / (f1l + f1h + 1e-6)
-            width = (f2f - f2b) / (f2f + f2b + 1e-6)
-            # A wide-open jaw physically cannot purse, so openness damps width.
-            # /a/ has a low enough F2 to read as "rounded" on the bands alone;
-            # letting openness suppress the width term is what keeps an open
-            # vowel from pursing.
-            width *= (1.0 - openness) ** 0.8
-            # Fricatives are formed with a nearly closed mouth.
-            h = hiss / (f1l + f1h + f2b + f2f + hiss + 1e-6)
-            openness *= 1.0 - 0.65 * min(1.0, h * 2.5)
-            out.append((level,
-                        float(min(1.0, max(0.0, openness))),
-                        float(min(1.0, max(-1.0, width)))))
-        return out
+        from core.formant import analyze_frames
+        return analyze_frames(samples, sr=sr)
     except Exception:
         return []
 
@@ -1471,6 +1425,20 @@ class ShiraziLive:
 
             if not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
+                # Phase 5: software mic gain (50–200 %, audio panel
+                # slider). Applied before queueing/sending, so the model
+                # hears exactly what the mic-test meter shows.
+                try:
+                    _gc = getattr(self, "_mic_gain_cache", None)
+                    _now = time.monotonic()
+                    if _gc is None or _now - _gc[1] > 3.0:
+                        _gc = (get_mic_gain(), _now)
+                        self._mic_gain_cache = _gc
+                    if _gc[0] != 100.0:
+                        from core.audio_gain import apply_mic_gain
+                        data = apply_mic_gain(data, _gc[0])
+                except Exception:
+                    pass
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
@@ -1769,6 +1737,24 @@ class ShiraziLive:
                         batch.extend(self.audio_in_queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
+
+                # Phase 5: master volume (0–100 %, audio panel slider).
+                # Applied before playback AND before the viseme/level
+                # analysis below, so the mouth, the VU and the echo
+                # reference all track the signal actually sent out.
+                try:
+                    _vc = getattr(self, "_master_vol_cache", None)
+                    _vnow = time.monotonic()
+                    if _vc is None or _vnow - _vc[1] > 3.0:
+                        _vc = (get_master_volume(), _vnow)
+                        self._master_vol_cache = _vc
+                    if _vc[0] != 100.0:
+                        from core.audio_gain import apply_master_volume
+                        batch = bytearray(apply_master_volume(
+                            np.frombuffer(bytes(batch), dtype=np.int16),
+                            _vc[0]).tobytes())
+                except Exception:
+                    pass
 
                 # Drive the HUD waveform and the avatar's mouth from SHIRAZI's
                 # own voice. The batch is up to 200 ms long, so we hand over a

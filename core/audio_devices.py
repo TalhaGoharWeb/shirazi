@@ -419,3 +419,106 @@ def resolve(name: str, kind: str):
     except Exception as e:
         print(f"[Audio] resolve({kind}) failed: {e} — using system default")
         return None
+
+
+# ── Professional device descriptions (Phase 5) ─────────────────────────────
+#
+# The audio panel shows more than a name: HOST API, CHANNELS, SAMPLE RATE and
+# STATUS per device. `describe_devices()` returns one dict per device; it never
+# raises and never touches the network — enumeration still goes through the
+# cached _query() path. On a platform where a host API cannot be enumerated
+# (e.g. WASAPI on Linux) the field reports "n/a" instead of failing: clean
+# architecture, documented limitation.
+
+def _host_api_name(dev, apis) -> str:
+    """Human host-API name for a raw sounddevice device dict."""
+    try:
+        idx = dev.get("hostapi", -1)
+        name = (apis[idx].get("name", "") if 0 <= idx < len(apis) else "")
+        name = (name or "").strip()
+        return name if name else "n/a"
+    except Exception:
+        return "n/a"
+
+
+def describe_devices(kind: str) -> list:
+    """Describe selectable devices for 'input' or 'output'.
+
+    Each entry: {"name", "host_api", "channels", "sample_rate",
+    "default_rate", "status"}. "status" is "READY" when the device opens at
+    the app's rate, "UNAVAILABLE" otherwise. "sample_rate" is the rate the
+    app actually runs at (from configure()); "default_rate" is the device's
+    own reported default. Never raises — returns [] when sounddevice or the
+    host API is missing.
+    """
+    if kind not in ("input", "output"):
+        return []
+    out = []
+    try:
+        import platform
+        import sounddevice as sd
+
+        devices = list(sd.query_devices())
+        try:
+            apis = list(sd.query_hostapis())  # raw dicts for _host_api_name()
+        except Exception:
+            apis = []
+
+        names = list_devices(kind)  # cached, background-warmed
+        chan_key = "max_input_channels" if kind == "input" else "max_output_channels"
+        rate = _RATES.get(kind)
+
+        for name in names:
+            entry = {"name": name, "host_api": "n/a", "channels": 0,
+                     "sample_rate": rate, "default_rate": None,
+                     "status": "UNAVAILABLE"}
+            for idx, dev in enumerate(devices):
+                if (dev.get("name") or "").strip() != name:
+                    continue
+                if dev.get(chan_key, 0) <= 0:
+                    continue
+                entry["host_api"] = _host_api_name(dev, apis)
+                entry["channels"] = int(dev.get(chan_key, 0) or 0)
+                try:
+                    entry["default_rate"] = float(
+                        dev.get("default_samplerate") or 0) or None
+                except Exception:
+                    entry["default_rate"] = None
+                entry["status"] = "READY" if _usable(idx, kind) else "UNAVAILABLE"
+                break
+            out.append(entry)
+    except Exception as e:
+        print(f"[Audio] describe_devices({kind}) failed: {e}")
+    return out
+
+
+def device_detail(name: str, kind: str) -> dict:
+    """One describe_devices() entry by name, or a placeholder when missing."""
+    for entry in describe_devices(kind):
+        if entry["name"] == (name or "").strip():
+            return entry
+    return {"name": name or DEFAULT_LABEL, "host_api": "n/a", "channels": 0,
+            "sample_rate": _RATES.get(kind), "default_rate": None,
+            "status": "NOT CONNECTED" if name else "SYSTEM DEFAULT"}
+
+
+def status_line(name: str, kind: str) -> str:
+    """The one-line status readout for the panel, e.g.
+    'HOST API: WASAPI / CHANNELS: 2 / SAMPLE RATE: 48 kHz / STATUS: READY'."""
+    d = device_detail(name, kind)
+    rate = d["sample_rate"]
+    rate_s = f"{rate / 1000:.0f} kHz" if rate else "n/a"
+    return (f"HOST API: {d['host_api']} / CHANNELS: {d['channels']} / "
+            f"SAMPLE RATE: {rate_s} / STATUS: {d['status']}")
+
+
+def rescan() -> dict:
+    """Drop the cache and re-enumerate. Runs on the caller's thread — the UI
+    calls it from a QThread worker, never the Qt thread. Returns the fresh
+    {'input': [...], 'output': [...]} name lists."""
+    global _cache, _probe_results
+    with _cache_lock:
+        _cache = None
+    _probe_results = {}
+    return {"input": list_devices("input", refresh=True),
+            "output": list_devices("output", refresh=True)}

@@ -20,7 +20,8 @@ else:
 
 from PyQt6.QtCore import (
     QEasingCurve, QLineF, QMimeData, QObject, QParallelAnimationGroup, QPointF,
-    QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal,
+    QPropertyAnimation, QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl,
+    pyqtSignal,
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
@@ -29,7 +30,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QMainWindow, QPushButton, QScrollArea, QSlider, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
 
@@ -37,6 +38,29 @@ try:
     from core.avatar import HoloAvatar
 except Exception:      # pragma: no cover — HUD must never die over cosmetics
     HoloAvatar = None
+
+# i18n (Phase 5). Guarded the same way: the HUD must never die over a
+# missing catalog — every t() call falls back to the key itself.
+try:
+    from i18n import t, set_language, is_rtl
+except Exception:      # pragma: no cover
+    def t(key, lang=None, **kwargs):
+        try:
+            return str(key).format(**kwargs)
+        except Exception:
+            return str(key)
+    def set_language(lang):
+        return "en"
+    def is_rtl(lang=None):
+        return False
+
+try:
+    from core.avatar_state import AvatarState, AvatarStateMachine, animation_for
+except Exception:      # pragma: no cover
+    AvatarState = None
+    AvatarStateMachine = None
+    def animation_for(state):
+        return {}
 
 
 def _base_dir() -> Path:
@@ -86,6 +110,8 @@ class C:
     GREEN_D   = "#00aa55"
     RED       = "#ff3355"
     MUTED_C   = "#ff3366"
+    EMERALD   = "#00d68f"
+    GOLD      = "#c6a03c"
     TEXT      = "#8ffcff"
     TEXT_DIM  = "#3a8a9a"
     TEXT_MED  = "#5ab8cc"
@@ -179,6 +205,30 @@ def retheme_all_widgets(old: dict[str, str], new: dict[str, str]) -> None:
 
 def qcol(h: str, a: int = 255) -> QColor:
     c = QColor(h); c.setAlpha(a); return c
+
+
+def paint_rosette(p, cx: float, cy: float, r: float,
+                  color: QColor, alpha: float = 42.0) -> None:
+    """Islamic geometric rosette (8-point khatam star): two squares at
+    45 degrees plus the inner octagon.
+
+    The quiet cultural signature of the interface — used sparingly
+    (overlay headers, HUD corners), never as wallpaper. Restrained by
+    design: one motif, low alpha, thin lines.
+    """
+    from PyQt6.QtCore import QPointF
+    c = QColor(color); c.setAlpha(int(min(255, max(0, alpha))))
+    p.setPen(QPen(c, 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for rot in (0.0, math.pi / 4):
+        pts = [QPointF(cx + r * math.cos(rot + i * math.pi / 2),
+                       cy + r * math.sin(rot + i * math.pi / 2))
+               for i in range(4)]
+        p.drawPolygon(*pts)
+    pts = [QPointF(cx + r * 0.55 * math.cos(i * math.pi / 4),
+                   cy + r * 0.55 * math.sin(i * math.pi / 4))
+           for i in range(8)]
+    p.drawPolygon(*pts)
 
 
 # ── Windows GPU via NVML DLL (no subprocess, no console window) ──────────────
@@ -399,6 +449,24 @@ class HudCanvas(QWidget):
                 self._avatar = HoloAvatar()
             except Exception:
                 self._avatar = None
+        # Phase 5: render mode + avatar style (user config).
+        self.render_mode = "realistic"
+        _style = "default"
+        try:
+            from memory.config_manager import get_render_mode, get_avatar_style
+            self.render_mode = get_render_mode()
+            _style = get_avatar_style()
+        except Exception:
+            pass
+        if self._avatar is not None:
+            try:
+                self._avatar.set_appearance(_style, True, True)
+                # REALISTIC_3D paints the shaded mesh; HOLOGRAM the
+                # wireframe. Reactor mode delegates to ReactorWidget.
+                self._avatar.shaded = (self.render_mode == "realistic")
+            except Exception:
+                pass
+        self._reactor_view = None    # lazy ReactorWidget child
 
         # Which centrepiece to draw. Read once here and changed live by the
         # settings toggle; the avatar object is kept either way so switching
@@ -452,6 +520,53 @@ class HudCanvas(QWidget):
                 self._avatar.glance(dx, dy, hold)
         except Exception:
             pass
+
+    def set_render_mode(self, mode: str) -> None:
+        """Switch the centrepiece: realistic → hologram → reactor, live."""
+        from core.avatar_styles import normalize_render_mode
+        mode = normalize_render_mode(mode)
+        self.render_mode = mode
+        try:
+            if self._avatar is not None:
+                self._avatar.shaded = (mode == "realistic")
+        except Exception:
+            pass
+        if mode == "reactor":
+            self._ensure_reactor()
+        try:
+            if self._reactor_view is not None:
+                self._reactor_view.setVisible(mode == "reactor")
+                if mode == "reactor":
+                    self._reactor_view.set_state(self.state)
+        except Exception:
+            pass
+        self.update()
+
+    def set_avatar_style(self, style: str) -> None:
+        """Swap the avatar headwear live (default/kofia/turban/kufi)."""
+        try:
+            if self._avatar is not None:
+                self._avatar.set_appearance(style, True, True)
+        except Exception:
+            pass
+        self.update()
+
+    def _ensure_reactor(self) -> None:
+        if self._reactor_view is not None:
+            return
+        try:
+            from ui_reactor import ReactorWidget
+            self._reactor_view = ReactorWidget(self)
+            self._reactor_view.setGeometry(self.rect())
+            self._reactor_view.set_state(self.state)
+            self._reactor_view.setVisible(self.render_mode == "reactor")
+        except Exception:
+            self._reactor_view = None
+
+    def resizeEvent(self, e):
+        if self._reactor_view is not None:
+            self._reactor_view.setGeometry(self.rect())
+        super().resizeEvent(e)
 
     def push_visemes(self, frames, hop: float, at: float) -> None:
         """Thread-safe: hand over a schedule of (level, openness, width) frames.
@@ -616,6 +731,14 @@ class HudCanvas(QWidget):
             self._scale += (self._tgt_scale - self._scale) * sp
             self._halo  += (self._tgt_halo  - self._halo)  * sp
 
+        # Phase 5: the reactor visualisation drinks from the same level —
+        # audio drives the ring/spokes/sphere, state biases the motion.
+        try:
+            if self._reactor_view is not None and self._reactor_view.isVisible():
+                self._reactor_view.set_level(amp)
+                self._reactor_view.set_state(self.state)
+        except Exception:
+            pass
         self._blink_tick += 1
         if self._blink_tick >= 38:
             self._blink = not self._blink
@@ -835,6 +958,16 @@ class HudCanvas(QWidget):
             self._grid_key   = _gkey
         p.drawPixmap(0, 0, self._grid_cache)
 
+        # Phase 5: REACTOR render mode. The ReactorWidget child paints
+        # itself (layered visualisation + telemetry + state indicators).
+        if self.render_mode == "reactor":
+            self._ensure_reactor()
+            if self._reactor_view is not None:
+                return
+            # If the widget could not be built (headless/broken env),
+            # fall through to the legacy software core below — the panel
+            # is never left empty.
+
         # ── holographic head ────────────────────────────────────────────────
         # Sized to the band between the top of the canvas and the status line,
         # capped by width, so it fills the HUD at any window size — including
@@ -870,24 +1003,31 @@ class HudCanvas(QWidget):
             _r = min(W * 0.46, _band_h / 2.0)
             self._paint_core(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
 
-        # status text
+    def _state_display(self) -> str:
+        key = "state_" + str(self.state).lower()
+        label = t(key)
+        return label if label != key else str(self.state).title()
+
+        # status text — state names come from the i18n catalog (Phase 5);
+        # unknown states fall back to the raw state name so the panel is
+        # never blank or misleading.
         sy = _sy_status
         if self.muted:
             txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
         elif self.speaking:
-            txt, col = "●  SPEAKING",  qcol(C.ACC)
+            txt, col = "●  " + t("state_speaking"),  qcol(C.ACC)
         elif self.state == "THINKING":
             sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
+            txt, col = f"{sym}  " + t("state_thinking"),   qcol(C.ACC2)
         elif self.state == "PROCESSING":
             sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
+            txt, col = f"{sym}  " + self._state_display(), qcol(C.ACC2)
         elif self.state == "LISTENING":
             sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
+            txt, col = f"{sym}  " + t("state_listening"),  qcol(C.GREEN)
         else:
             sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  {self.state}", qcol(C.PRI)
+            txt, col = f"{sym}  " + self._state_display(), qcol(C.PRI)
 
         p.setPen(QPen(col, 1))
         p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
@@ -1970,7 +2110,7 @@ class ConfirmBanner(_HudOverlay):
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(8)
 
-        hdr = QLabel("⚠  CONFIRM")
+        hdr = QLabel("⚠  " + t("confirm_banner_title"))
         hdr.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.ACC}; background: transparent;")
         lay.addWidget(hdr)
@@ -1990,7 +2130,7 @@ class ConfirmBanner(_HudOverlay):
 
         row = QHBoxLayout(); row.setSpacing(8)
 
-        yes = QPushButton("▸  CONFIRM")
+        yes = QPushButton("▸  " + t("confirm_button"))
         yes.setFixedHeight(32)
         yes.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
         yes.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2002,7 +2142,7 @@ class ConfirmBanner(_HudOverlay):
         yes.clicked.connect(lambda: self.answered.emit(True))
         row.addWidget(yes)
 
-        no = QPushButton("CANCEL")
+        no = QPushButton(t("cancel_button"))
         no.setFixedHeight(32)
         no.setFont(QFont("Courier New", 9))
         no.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2021,26 +2161,98 @@ class ConfirmBanner(_HudOverlay):
         no.setFocus()
 
 
-class AudioDeviceOverlay(_HudOverlay):
-    """Choose which microphone SHIRAZI listens to and which speakers it uses.
 
-    Both audio streams used to open with no `device=` at all, so they always
-    took the OS default — which on Windows moves by itself the moment a headset
-    is plugged in. 'SHIRAZI can't hear me' is usually 'SHIRAZI is listening to the
-    webcam'."""
+class _RescanWorker(QThread):
+    """Re-enumerate audio devices off the Qt thread. Never freezes the GUI."""
+    done = pyqtSignal(dict)
+
+    def run(self):
+        try:
+            from core import audio_devices as ad
+            result = ad.rescan()
+        except Exception:
+            result = {"input": [], "output": []}
+        self.done.emit(result)
+
+
+class _DetailWorker(QThread):
+    """Fill HOST API / CHANNELS / SAMPLE RATE / STATUS off the Qt thread.
+
+    describe_devices() opens each device briefly to verify it, which can cost
+    hundreds of milliseconds on a machine with many endpoints — that work
+    never happens on the GUI thread.
+    """
+    done = pyqtSignal(dict)
+
+    def run(self):
+        out = {"input": [], "output": []}
+        try:
+            from core import audio_devices as ad
+            out["input"] = ad.describe_devices("input")
+            out["output"] = ad.describe_devices("output")
+        except Exception:
+            pass
+        self.done.emit(out)
+
+
+class _ChimeWorker(QThread):
+    """Play the synthetic test chime without blocking the GUI."""
+    ok = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, device_name: str, parent=None):
+        super().__init__(parent)
+        self._device_name = device_name or ""
+
+    def run(self):
+        try:
+            import numpy as np
+            import sounddevice as sd
+            from core import audio_devices as ad
+            sr, dur = 44100, 0.9
+            n = int(sr * dur)
+            tt = np.arange(n, dtype=np.float32) / sr
+            env = np.exp(-3.0 * tt / dur) * np.minimum(1.0, tt / 0.02)
+            # Synthetic test signal: 587 Hz + 880 Hz + 146 Hz.
+            sig = (0.50 * np.sin(2 * np.pi * 587.33 * tt)
+                   + 0.30 * np.sin(2 * np.pi * 880.00 * tt)
+                   + 0.20 * np.sin(2 * np.pi * 146.83 * tt)) * env
+            pcm = (np.clip(sig, -1.0, 1.0) * 32767).astype(np.int16)
+            dev = ad.resolve(self._device_name, "output")
+            with sd.OutputStream(samplerate=sr, channels=1, dtype="int16",
+                                 device=dev) as st:
+                st.write(pcm)
+            self.ok.emit()
+        except Exception as e:  # noqa: BLE001 — report, don't crash the panel
+            self.failed.emit(str(e)[:160])
+
+
+class AudioDeviceOverlay(_HudOverlay):
+    """Professional audio hardware panel.
+
+    INPUT DEVICE / OUTPUT DEVICE pickers with a per-device readout —
+    HOST API, CHANNELS, SAMPLE RATE, STATUS — plus a live mic test (VU meter,
+    %, dB, peak, clipping), a synthetic speaker chime, background rescan,
+    software mic gain (50–200%) and master volume (0–100%).
+
+    Hard rules honoured here: device enumeration and the chime run in QThread
+    workers; the mic test stream is non-blocking and is *always* closed when
+    the overlay hides, so the device is never locked.
+    """
 
     picked = pyqtSignal()      # emitted after Apply, when something changed
-    _OW = 460
+    _OW = 540
 
     def __init__(self, parent=None):
         super().__init__(parent)
         from core.audio_devices import list_devices, DEFAULT_LABEL
-        from memory.config_manager import get_input_device, get_output_device
+        from memory.config_manager import (get_input_device, get_output_device,
+                                           get_mic_gain, get_master_volume)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             AudioDeviceOverlay {{
-                background: rgba(0, 6, 10, 245);
+                background: rgba(2, 10, 14, 246);
                 border: 1px solid {C.BORDER_B};
                 border-radius: 6px;
             }}
@@ -2048,14 +2260,17 @@ class AudioDeviceOverlay(_HudOverlay):
         self.setFixedWidth(self._OW)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 14, 20, 16)
         lay.setSpacing(6)
 
-        hdr = QLabel("🎧  AUDIO DEVICES")
+        # ── header ──────────────────────────────────────────────────────
+        hrow = QHBoxLayout()
+        hdr = QLabel("🎧  " + t("audio_title"))
         hdr.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-        lay.addWidget(hdr)
-
+        hrow.addWidget(hdr)
+        hrow.addStretch(1)
+        lay.addLayout(hrow)
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
         lay.addWidget(sep)
@@ -2067,48 +2282,139 @@ class AudioDeviceOverlay(_HudOverlay):
             f"QComboBox QAbstractItemView {{ background: #000d12; color: {C.TEXT}; "
             f"selection-background-color: {C.PRI_GHO}; border: 1px solid {C.BORDER}; }}"
         )
+        _detail_css = (f"color: {C.TEXT_DIM}; background: transparent;")
 
-        def _row(label: str, kind: str, current: str) -> QComboBox:
-            cap = QLabel(label)
+        def _row(label_key: str, kind: str, current: str):
+            cap = QLabel(t(label_key))
             cap.setFont(QFont("Courier New", 8))
-            cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            cap.setStyleSheet(_detail_css)
             lay.addWidget(cap)
 
             box = QComboBox()
             box.setFont(QFont("Courier New", 9))
             box.setFixedHeight(30)
             box.setStyleSheet(_combo_css)
-            # The list is served from a cache warmed on a background thread at
-            # startup, so opening this panel never blocks the Qt thread on the
-            # host audio API.
+            # Served from the background-warmed cache — opening this panel
+            # never blocks the Qt thread on the host audio API.
             box.addItem(DEFAULT_LABEL, "")
             for name in list_devices(kind):
                 box.addItem(name, name)
             idx = box.findData(current) if current else 0
             box.setCurrentIndex(idx if idx >= 0 else 0)
             if current and idx < 0:
-                # Saved device is not plugged in right now. Show it rather than
-                # silently resetting the user's choice to default.
-                box.addItem(f"{current}  (not connected)", current)
+                box.addItem(f"{current}  ({t('status_not_connected')})", current)
                 box.setCurrentIndex(box.count() - 1)
             lay.addWidget(box)
-            return box
 
-        self._in_box  = _row("MICROPHONE — what SHIRAZI hears you with",
-                             "input", get_input_device())
-        lay.addSpacing(4)
-        self._out_box = _row("SPEAKERS — what SHIRAZI talks through",
-                             "output", get_output_device())
+            detail = QLabel("…")
+            detail.setFont(QFont("Courier New", 7))
+            detail.setStyleSheet(_detail_css)
+            detail.setWordWrap(True)
+            lay.addWidget(detail)
+            box.currentIndexChanged.connect(
+                lambda _i, k=kind, b=box: self._on_device_picked(k, b))
+            return box, detail
 
-        note = QLabel("Applying reconnects the session. Your conversation is kept.")
+        self._in_box, self._in_detail = _row(
+            "audio_input_label", "input", get_input_device())
+        lay.addSpacing(2)
+        self._out_box, self._out_detail = _row(
+            "audio_output_label", "output", get_output_device())
+
+        # ── test row: mic test | chime | rescan ─────────────────────────
+        trow = QHBoxLayout(); trow.setSpacing(8)
+        _tbtn = (f"QPushButton {{ background: transparent; color: {C.TEXT_MED}; "
+                 f"border: 1px solid {C.BORDER}; border-radius: 3px; }}"
+                 f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.BORDER_B}; }}"
+                 f"QPushButton:disabled {{ color: {C.TEXT_DIM}; }}")
+        self._mic_btn = QPushButton("🎤  " + t("audio_test_mic"))
+        self._mic_btn.setFixedHeight(30)
+        self._mic_btn.setFont(QFont("Courier New", 8))
+        self._mic_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mic_btn.setStyleSheet(_tbtn)
+        self._mic_btn.clicked.connect(self._toggle_mic_test)
+        trow.addWidget(self._mic_btn)
+
+        self._chime_btn = QPushButton("🔔  " + t("audio_test_chime"))
+        self._chime_btn.setFixedHeight(30)
+        self._chime_btn.setFont(QFont("Courier New", 8))
+        self._chime_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._chime_btn.setStyleSheet(_tbtn)
+        self._chime_btn.clicked.connect(self._play_chime)
+        trow.addWidget(self._chime_btn)
+
+        self._rescan_btn = QPushButton("🔄  " + t("audio_rescan"))
+        self._rescan_btn.setFixedHeight(30)
+        self._rescan_btn.setFont(QFont("Courier New", 8))
+        self._rescan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._rescan_btn.setStyleSheet(_tbtn)
+        self._rescan_btn.clicked.connect(self._rescan)
+        trow.addWidget(self._rescan_btn)
+        lay.addSpacing(2)
+        lay.addLayout(trow)
+
+        # ── mic test readout: VU + % / dB / peak / clipping ─────────────
+        mrow = QHBoxLayout(); mrow.setSpacing(8)
+        self._vu = QProgressBar()
+        self._vu.setRange(0, 100); self._vu.setValue(0)
+        self._vu.setTextVisible(False)
+        self._vu.setFixedHeight(12)
+        self._vu.setStyleSheet(
+            f"QProgressBar {{ background: {C.BAR_BG}; border: 1px solid {C.BORDER};"
+            f" border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {C.EMERALD}; border-radius: 2px; }}")
+        mrow.addWidget(self._vu, 1)
+        self._mic_readout = QLabel("—")
+        self._mic_readout.setFont(QFont("Courier New", 7))
+        self._mic_readout.setStyleSheet(_detail_css)
+        self._mic_readout.setMinimumWidth(170)
+        mrow.addWidget(self._mic_readout)
+        self._clip_lbl = QLabel("")
+        self._clip_lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        self._clip_lbl.setStyleSheet(f"color: {C.RED}; background: transparent;")
+        mrow.addWidget(self._clip_lbl)
+        lay.addLayout(mrow)
+
+        # ── gain / volume sliders ───────────────────────────────────────
+        def _slider_row(label_key: str, lo: int, hi: int, val: float,
+                        fmt: str, on_release):
+            srow = QHBoxLayout(); srow.setSpacing(8)
+            cap = QLabel(t(label_key))
+            cap.setFont(QFont("Courier New", 8))
+            cap.setStyleSheet(_detail_css)
+            cap.setMinimumWidth(120)
+            srow.addWidget(cap)
+            sld = QSlider(Qt.Orientation.Horizontal)
+            sld.setRange(lo, hi)
+            sld.setValue(int(val))
+            sld.setFixedHeight(22)
+            srow.addWidget(sld, 1)
+            vlab = QLabel(fmt % val)
+            vlab.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            vlab.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            vlab.setMinimumWidth(56)
+            srow.addWidget(vlab)
+            sld.valueChanged.connect(lambda v: vlab.setText(fmt % v))
+            sld.sliderReleased.connect(lambda: on_release(sld.value()))
+            lay.addLayout(srow)
+            return sld
+
+        self._gain_sld = _slider_row("audio_mic_gain", 50, 200,
+                                     get_mic_gain(), "%d%%",
+                                     self._save_gain)
+        self._vol_sld = _slider_row("audio_master_volume", 0, 100,
+                                    get_master_volume(), "%d%%",
+                                    self._save_volume)
+
+        note = QLabel(t("audio_reconnect_note"))
         note.setWordWrap(True)
         note.setFont(QFont("Courier New", 7))
-        note.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        lay.addSpacing(6)
+        note.setStyleSheet(_detail_css)
+        lay.addSpacing(4)
         lay.addWidget(note)
 
         row = QHBoxLayout(); row.setSpacing(8)
-        ok = QPushButton("▸  APPLY")
+        ok = QPushButton("▸  " + t("audio_apply"))
         ok.setFixedHeight(32)
         ok.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
         ok.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2120,7 +2426,7 @@ class AudioDeviceOverlay(_HudOverlay):
         ok.clicked.connect(self._apply)
         row.addWidget(ok)
 
-        cancel = QPushButton("CLOSE")
+        cancel = QPushButton(t("audio_close"))
         cancel.setFixedHeight(32)
         cancel.setFont(QFont("Courier New", 9))
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2132,6 +2438,203 @@ class AudioDeviceOverlay(_HudOverlay):
         cancel.clicked.connect(self.hide)
         row.addWidget(cancel)
         lay.addLayout(row)
+
+        # ── mic test state ──────────────────────────────────────────────
+        self._mic_stream = None
+        self._mic_level = 0.0      # written by the audio callback
+        self._mic_peak = float("-inf")
+        self._mic_tmr = QTimer(self)
+        self._mic_tmr.timeout.connect(self._mic_tick)
+        self._details_cache = {"input": [], "output": []}
+        self._worker = None        # kept alive while a worker runs
+        self._refresh_details_bg()
+
+    # ── device details (background) ──────────────────────────────────────
+
+    def _refresh_details_bg(self):
+        w = _DetailWorker(self)
+        w.done.connect(self._on_details)
+        w.finished.connect(w.deleteLater)
+        self._worker = w
+        w.start()
+
+    def _on_details(self, details: dict):
+        self._details_cache = details
+        self._paint_details()
+
+    def _detail_text(self, kind: str, name: str) -> str:
+        entry = None
+        for e in self._details_cache.get(kind, []):
+            if e.get("name") == (name or ""):
+                entry = e
+                break
+        if entry is None:
+            if not name:
+                st = t("status_system_default")
+            else:
+                st = t("status_not_connected")
+            return (f"{t('audio_host_api')}: n/a / {t('audio_channels')}: 0 / "
+                    f"{t('audio_sample_rate')}: n/a / {t('audio_status')}: {st}")
+        status = {"READY": t("status_ready"),
+                  "UNAVAILABLE": t("status_unavailable"),
+                  "NOT CONNECTED": t("status_not_connected"),
+                  "SYSTEM DEFAULT": t("status_system_default")}.get(
+                      entry.get("status"), entry.get("status"))
+        rate = entry.get("sample_rate")
+        rate_s = f"{rate / 1000:.0f} kHz" if rate else "n/a"
+        return (f"{t('audio_host_api')}: {entry.get('host_api', 'n/a')} / "
+                f"{t('audio_channels')}: {entry.get('channels', 0)} / "
+                f"{t('audio_sample_rate')}: {rate_s} / "
+                f"{t('audio_status')}: ● {status}")
+
+    def _paint_details(self):
+        self._in_detail.setText(
+            self._detail_text("input", self._in_box.currentData() or ""))
+        self._out_detail.setText(
+            self._detail_text("output", self._out_box.currentData() or ""))
+
+    def _on_device_picked(self, kind: str, box):
+        # Repaint the detail line for the newly selected device from cache.
+        self._paint_details()
+
+    # ── rescan (background worker; GUI never freezes) ────────────────────
+
+    def _rescan(self):
+        self._rescan_btn.setEnabled(False)
+        self._rescan_btn.setText("…")
+        w = _RescanWorker(self)
+        w.done.connect(self._on_rescanned)
+        w.finished.connect(w.deleteLater)
+        self._worker = w
+        w.start()
+
+    def _on_rescanned(self, result: dict):
+        from core.audio_devices import DEFAULT_LABEL
+        self._rescan_btn.setEnabled(True)
+        self._rescan_btn.setText("🔄  " + t("audio_rescan"))
+        for kind, box in (("input", self._in_box), ("output", self._out_box)):
+            cur = box.currentData()
+            box.clear()
+            box.addItem(DEFAULT_LABEL, "")
+            for name in result.get(kind, []):
+                box.addItem(name, name)
+            idx = box.findData(cur) if cur else 0
+            box.setCurrentIndex(idx if idx >= 0 else 0)
+            if cur and idx < 0:
+                box.addItem(f"{cur}  ({t('status_not_connected')})", cur)
+                box.setCurrentIndex(box.count() - 1)
+        self._refresh_details_bg()
+
+    # ── mic test: non-blocking stream, live VU @ ~30 FPS ────────────────
+
+    def _toggle_mic_test(self):
+        if self._mic_stream is not None:
+            self._stop_mic_test()
+            return
+        try:
+            import sounddevice as sd
+            from core import audio_devices as ad
+            dev = ad.resolve(self._in_box.currentData() or "", "input")
+
+            def _cb(indata, frames, time_info, status):
+                try:
+                    import numpy as np
+                    x = np.asarray(indata, dtype=np.float32).ravel()
+                    rms = float(np.sqrt(np.mean(x * x))) if x.size else 0.0
+                    self._mic_level = rms / 32768.0
+                    if rms > 0:
+                        db = 20.0 * float(np.log10(rms / 32768.0))
+                        if db > self._mic_peak:
+                            self._mic_peak = db
+                except Exception:
+                    pass
+
+            self._mic_peak = float("-inf")
+            self._mic_stream = sd.InputStream(
+                samplerate=16000, channels=1, dtype="int16",
+                device=dev, callback=_cb, blocksize=512)
+            self._mic_stream.start()
+            self._mic_tmr.start(33)      # ~30 FPS readout
+            self._mic_btn.setText("⏹  " + t("audio_stop"))
+        except Exception as e:  # noqa: BLE001 — show, don't crash
+            self._mic_readout.setText(str(e)[:80])
+
+    def _mic_tick(self):
+        import math
+        lvl = min(1.0, max(0.0, self._mic_level or 0.0))
+        self._vu.setValue(int(lvl * 100))
+        # Peak decays slowly so transients stay visible.
+        self._mic_peak = max(self._mic_peak - 0.4, float("-inf")
+                             if self._mic_peak == float("-inf")
+                             else self._mic_peak)
+        if lvl <= 0.0:
+            db_s, pct_s = "-∞ dB", "0%"
+        else:
+            db = 20.0 * math.log10(max(1e-6, lvl))
+            db_s, pct_s = f"{db:+.1f} dB", f"{lvl * 100:.0f}%"
+        peak_s = "—" if self._mic_peak == float("-inf") \
+            else f"{t('audio_peak')} {self._mic_peak:+.1f} dB"
+        self._mic_readout.setText(f"{pct_s}  ·  {db_s}  ·  {peak_s}")
+        clipping = self._mic_peak >= -0.5
+        self._clip_lbl.setText(("⚠ " + t("audio_clipping")) if clipping else "")
+        # VU colour shifts emerald → amber near the top.
+        chunk = C.RED if lvl > 0.92 else (C.GOLD if lvl > 0.7 else C.EMERALD)
+        self._vu.setStyleSheet(
+            f"QProgressBar {{ background: {C.BAR_BG}; border: 1px solid {C.BORDER};"
+            f" border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {chunk}; border-radius: 2px; }}")
+
+    def _stop_mic_test(self):
+        try:
+            self._mic_tmr.stop()
+        except Exception:
+            pass
+        st, self._mic_stream = self._mic_stream, None
+        if st is not None:
+            try:
+                st.stop(); st.close()
+            except Exception:
+                pass
+        try:
+            self._mic_btn.setText("🎤  " + t("audio_test_mic"))
+            self._vu.setValue(0)
+            self._mic_readout.setText("—")
+            self._clip_lbl.setText("")
+        except Exception:
+            pass
+
+    def hideEvent(self, e):
+        # The stream auto-closes when the overlay hides — the device is never
+        # locked by a forgotten test.
+        self._stop_mic_test()
+        super().hideEvent(e)
+
+    # ── speaker chime (background worker) ────────────────────────────────
+
+    def _play_chime(self):
+        self._chime_btn.setEnabled(False)
+        w = _ChimeWorker(self._out_box.currentData() or "", self)
+        w.ok.connect(lambda: self._chime_btn.setEnabled(True))
+        w.failed.connect(self._on_chime_failed)
+        w.finished.connect(w.deleteLater)
+        self._worker = w
+        w.start()
+
+    def _on_chime_failed(self, msg: str):
+        self._chime_btn.setEnabled(True)
+        self._mic_readout.setText(msg[:80])
+
+    # ── gain / volume ────────────────────────────────────────────────────
+
+    def _save_gain(self, v: int):
+        from memory.config_manager import save_mic_gain
+        save_mic_gain(v)
+
+    def _save_volume(self, v: int):
+        from memory.config_manager import save_master_volume
+        save_master_volume(v)
+
+    # ── apply ────────────────────────────────────────────────────────────
 
     def _apply(self):
         from memory.config_manager import (
@@ -2145,9 +2648,148 @@ class AudioDeviceOverlay(_HudOverlay):
         save_output_device(new_out)
         self.hide()
         # Only rebuild the session if something actually moved — a no-op Apply
-        # should not cost a reconnect.
+        # should not cost a reconnect. main.py honours request_reconnect()
+        # with keep_context=True, so the conversation is preserved.
         if changed:
             self.picked.emit()
+
+
+
+
+class TelemetryOverlay(_HudOverlay):
+    """System telemetry as animated progress bars.
+
+    CPU, RAM, DISK, BATTERY, UPTIME, NETWORK — sampled by
+    core/telemetry.py (throttled, never overloads the machine it measures)
+    and eased toward the latest sample so the bars move smoothly instead of
+    jumping. Purely informational; every probe is guarded.
+    """
+
+    _OW = 440
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from core.telemetry import TelemetrySampler, clamp_bar
+
+        self._clamp_bar = clamp_bar
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            TelemetryOverlay {{
+                background: rgba(2, 10, 14, 246);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 6px;
+            }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 20, 16)
+        lay.setSpacing(6)
+
+        hdr = QLabel("◈  " + t("telemetry_title"))
+        hdr.setFont(QFont("Courier New", 12, QFont.Weight.Bold))
+        hdr.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        lay.addWidget(hdr)
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep)
+
+        self._bars: dict[str, QProgressBar] = {}
+        self._val_labels: dict[str, QLabel] = {}
+        self._shown: dict[str, float] = {}
+        self._target: dict[str, float] = {}
+        self._text_labels: dict[str, QLabel] = {}
+
+        _bar_css = (
+            f"QProgressBar {{ background: {C.BAR_BG}; "
+            f"border: 1px solid {C.BORDER}; border-radius: 3px; text-align: center; }}"
+            f"QProgressBar::chunk {{ background: {C.EMERALD}; border-radius: 2px; }}")
+
+        for key in ("CPU", "RAM", "DISK", "BATTERY"):
+            row = QHBoxLayout(); row.setSpacing(8)
+            cap = QLabel(key)
+            cap.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            cap.setMinimumWidth(64)
+            row.addWidget(cap)
+            bar = QProgressBar()
+            bar.setRange(0, 100); bar.setValue(0)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(12)
+            bar.setStyleSheet(_bar_css)
+            row.addWidget(bar, 1)
+            vlab = QLabel("—")
+            vlab.setFont(QFont("Courier New", 8))
+            vlab.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            vlab.setMinimumWidth(64)
+            row.addWidget(vlab)
+            lay.addLayout(row)
+            self._bars[key] = bar
+            self._val_labels[key] = vlab
+            self._shown[key] = 0.0
+            self._target[key] = 0.0
+
+        for key in ("UPTIME", "NETWORK"):
+            row = QHBoxLayout(); row.setSpacing(8)
+            cap = QLabel(key)
+            cap.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            cap.setMinimumWidth(64)
+            row.addWidget(cap)
+            vlab = QLabel("—")
+            vlab.setFont(QFont("Courier New", 8))
+            vlab.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+            row.addWidget(vlab, 1)
+            lay.addLayout(row)
+            self._text_labels[key] = vlab
+
+        close = QPushButton(t("audio_close"))
+        close.setFixedHeight(30)
+        close.setFont(QFont("Courier New", 9))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        close.clicked.connect(self.hide)
+        lay.addSpacing(4)
+        lay.addWidget(close)
+
+        self._sampler = TelemetrySampler(min_interval=2.0)
+        self._tick_n = 0
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._tick)
+        self._tmr.start(150)     # ease at ~7 Hz; sampler throttles itself
+        self._sample()
+
+    def _sample(self):
+        try:
+            s = self._sampler.snapshot()
+        except Exception:
+            return
+        for key, value, disp in s.as_rows():
+            if key in self._bars:
+                self._target[key] = self._clamp_bar(value)
+                self._val_labels[key].setText(disp)
+            elif key in self._text_labels:
+                self._text_labels[key].setText(disp)
+
+    def _tick(self):
+        self._tick_n += 1
+        if self._tick_n % 14 == 0:      # ~every 2 s
+            self._sample()
+        for key, bar in self._bars.items():
+            shown = self._shown[key] + (self._target[key] - self._shown[key]) * 0.25
+            self._shown[key] = shown
+            bar.setValue(int(shown))
+
+    def hideEvent(self, e):
+        try:
+            self._tmr.stop()
+        except Exception:
+            pass
+        super().hideEvent(e)
 
 
 class MemoryOverlay(_HudOverlay):
@@ -3078,6 +3720,12 @@ class MainWindow(QMainWindow):
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        # Phase 5: avatar state machine mirrors every UI state transition
+        # (unknown/legacy states are ignored, never raise).
+        try:
+            self._avatar_sm = AvatarStateMachine() if AvatarStateMachine else None
+        except Exception:
+            self._avatar_sm = None
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
         self._camera_sig.connect(self._show_camera_frame)
@@ -3972,6 +4620,45 @@ class MainWindow(QMainWindow):
         audio_btn.clicked.connect(self._open_audio_devices)
         lay.addWidget(audio_btn)
 
+        # ── Phase 5: language / avatar style / telemetry ─────────────
+        lang_cap = QLabel("🌐  " + t("language_label").upper())
+        lang_cap.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        lang_cap.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        lay.addWidget(lang_cap)
+        self._lang_box = QComboBox()
+        self._lang_box.setFont(QFont("Courier New", 7))
+        self._lang_box.setFixedHeight(26)
+        self._lang_box.setCursor(Qt.CursorShape.PointingHandCursor)
+        for _code, _label in (("en", "English"), ("ur", "اردو"),
+                              ("ar", "العربية"), ("ur-Latn", "Roman Urdu")):
+            self._lang_box.addItem(_label, _code)
+        try:
+            from memory.config_manager import get_language
+            _cur = get_language()
+            _idx = self._lang_box.findData(_cur)
+            self._lang_box.setCurrentIndex(_idx if _idx >= 0 else 0)
+        except Exception:
+            pass
+        self._lang_box.currentIndexChanged.connect(self._on_language_changed)
+        lay.addWidget(self._lang_box)
+
+        self._style_btn = QPushButton()
+        self._style_btn.setFixedHeight(26)
+        self._style_btn.setFont(QFont("Courier New", 7))
+        self._style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._style_btn.setStyleSheet(_BTN_STYLE_DIM)
+        self._style_btn.clicked.connect(self._cycle_avatar_style)
+        lay.addWidget(self._style_btn)
+        self._refresh_style_btn()
+
+        telemetry_btn = QPushButton("◈  " + t("telemetry_title").upper())
+        telemetry_btn.setFixedHeight(26)
+        telemetry_btn.setFont(QFont("Courier New", 7))
+        telemetry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        telemetry_btn.setStyleSheet(_BTN_STYLE_DIM)
+        telemetry_btn.clicked.connect(self._open_telemetry)
+        lay.addWidget(telemetry_btn)
+
         mem_btn = QPushButton("🧠  MEMORY")
         mem_btn.setFixedHeight(26)
         mem_btn.setFont(QFont("Courier New", 7))
@@ -4802,40 +5489,33 @@ class MainWindow(QMainWindow):
 
 
     def _refresh_hud_btn(self):
-        from memory.config_manager import get_hud_style
-        face = get_hud_style() == "face"
-        # Neither state is "off", so both read as active — this is a choice
-        # between two things, not a switch with a disabled side.
-        style = f"""
-            QPushButton {{ background: {C.PANEL2}; color: {C.PRI};
-                border: 1px solid {C.BORDER_A}; border-radius: 3px;
-                text-align: left; padding: 0 8px; }}
-            QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        self._hud_btn.setText("🧑  HUD: ANIMATED FACE" if face
-                              else "◉  HUD: REACTOR CORE")
-        self._hud_btn.setStyleSheet(style)
-        self._hud_btn.setToolTip(
-            "An animated head that speaks your words and shows what SHIRAZI is "
-            "doing. Tap to switch to the reactor core."
-            if face else
-            "A reactor core that turns with the state and moves with your voice. "
-            "Tap to switch to the animated head.")
+        from memory.config_manager import get_render_mode
+        mode = get_render_mode()
+        label = {"realistic": t("mode_realistic"),
+                 "hologram": t("mode_hologram"),
+                 "reactor": t("mode_reactor")}.get(mode, mode)
+        self._hud_btn.setText(
+            f"◈  {t('render_mode_label').upper()}: {label.upper()}")
 
     def _toggle_hud_style(self):
-        """Swap the centrepiece. Both objects stay in memory, so the change is
-        instant and switching back costs nothing."""
-        from memory.config_manager import get_hud_style, save_hud_style
-        want = "core" if get_hud_style() == "face" else "face"
-        save_hud_style(want)
+        """Cycle the centrepiece render mode: realistic → hologram → reactor.
+
+        The legacy hud_style flag is kept in sync (face for the two head
+        modes, core for the reactor) so old configs keep working.
+        """
+        from memory.config_manager import (get_render_mode, save_render_mode,
+                                           save_hud_style)
+        order = ["realistic", "hologram", "reactor"]
+        cur = get_render_mode()
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "realistic"
+        save_render_mode(nxt)
+        save_hud_style("core" if nxt == "reactor" else "face")
         try:
-            self.hud.hud_style = want
-            self.hud.update()
+            self.hud.set_render_mode(nxt)
         except Exception:
             pass
         self._refresh_hud_btn()
-        self._log.append_log(
-            "SYS: HUD switched to the animated face." if want == "face"
-            else "SYS: HUD switched to the reactor core.")
+        self._log.append_log(f"SYS: Render mode → {nxt}.")
 
     def _toggle_ptt(self):
         from memory.config_manager import (get_push_to_talk_enabled,
@@ -5205,6 +5885,18 @@ class MainWindow(QMainWindow):
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
+        # Phase 5: the state machine tracks the UI; fail-soft so legacy
+        # states like INITIALISING/MUTED never crash the transition.
+        try:
+            if getattr(self, "_avatar_sm", None) is not None and AvatarState is not None:
+                try:
+                    st = AvatarState(str(state).strip().upper())
+                except ValueError:
+                    st = None
+                if st is not None:
+                    self._avatar_sm.request(st)
+        except Exception:
+            pass
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False

@@ -439,3 +439,80 @@ def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
     plugins_cfg[plugin_name] = enabled
     data["plugins_enabled"] = plugins_cfg
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+# ── Phase 5: avatar, audio panel, language ──────────────────────────────────
+
+AVATAR_STYLE_DEFAULT = "default"
+
+
+def get_avatar_style() -> str:
+    """Avatar headwear style: default | kofia | turban | kufi.
+
+    Headwear is respectful, never caricature (see core/avatar_styles.py).
+    """
+    v = str(load_api_keys().get("avatar_style", AVATAR_STYLE_DEFAULT)).strip().lower()
+    return v if v in ("default", "kofia", "turban", "kufi") else AVATAR_STYLE_DEFAULT
+
+
+def save_avatar_style(style: str) -> None:
+    s = str(style or "").strip().lower()
+    _save_flag("avatar_style",
+               s if s in ("default", "kofia", "turban", "kufi") else AVATAR_STYLE_DEFAULT)
+
+
+def get_render_mode() -> str:
+    """HUD render mode: realistic | hologram | reactor."""
+    v = str(load_api_keys().get("render_mode", "realistic")).strip().lower()
+    return v if v in ("realistic", "hologram", "reactor") else "realistic"
+
+
+def save_render_mode(mode: str) -> None:
+    m = str(mode or "").strip().lower()
+    _save_flag("render_mode",
+               m if m in ("realistic", "hologram", "reactor") else "realistic")
+
+
+def get_mic_gain() -> float:
+    """Software mic gain, percent, clamped 50–200. Applied to PCM input."""
+    try:
+        return float(min(200.0, max(50.0, load_api_keys().get("mic_gain", 100))))
+    except (TypeError, ValueError):
+        return 100.0
+
+
+def save_mic_gain(percent: float) -> None:
+    try:
+        p = float(min(200.0, max(50.0, percent)))
+    except (TypeError, ValueError):
+        p = 100.0
+    _save_flag("mic_gain", p)
+
+
+def get_master_volume() -> float:
+    """Master speaker volume, percent, clamped 0–100. Applied to playback."""
+    try:
+        return float(min(100.0, max(0.0, load_api_keys().get("master_volume", 100))))
+    except (TypeError, ValueError):
+        return 100.0
+
+
+def save_master_volume(percent: float) -> None:
+    try:
+        p = float(min(100.0, max(0.0, percent)))
+    except (TypeError, ValueError):
+        p = 100.0
+    _save_flag("master_volume", p)
+
+
+LANGUAGES = ("en", "ur", "ar", "ur-Latn")
+
+
+def get_language() -> str:
+    """UI language code. The single source of truth for i18n (see i18n/)."""
+    v = str(load_api_keys().get("language", "en")).strip()
+    return v if v in LANGUAGES else "en"
+
+
+def save_language(lang: str) -> None:
+    v = str(lang or "").strip()
+    _save_flag("language", v if v in LANGUAGES else "en")

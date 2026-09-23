@@ -203,8 +203,135 @@ class HoloAvatar:
         self._wide = 0.0           # smoothed lip spread, -1 round .. +1 spread
         self._v_peak = 0.18        # running estimate of this voice's loud level
 
+        # ── appearance (Phase 5) ──────────────────────────────────────────
+        # Headwear style + optional ears/beard, from the mission config.
+        # Purely cosmetic; the animation state machine is untouched.
+        self._style = "default"
+        self._ears = True
+        self._beard = True
+
     # ── animation ───────────────────────────────────────────────────────────
 
+
+    # ── appearance (Phase 5) ──────────────────────────────────────────────
+
+    def set_appearance(self, style: str = "default",
+                       ears: bool = True, beard: bool = True) -> None:
+        """Set headwear style and facial-hair/ear flags.
+
+        style: default | kofia | turban | kufi (unknown → default).
+        Never raises — cosmetic only.
+        """
+        try:
+            from core.avatar_styles import normalize_style
+            self._style = normalize_style(style)
+        except Exception:
+            self._style = "default"
+        self._ears = bool(ears)
+        self._beard = bool(beard)
+
+    def appearance(self) -> dict:
+        return {"style": self._style, "ears": self._ears,
+                "beard": self._beard}
+
+    def _paint_headwear(self, p: QPainter, cx: float, cy: float, r: float,
+                        primary: QColor, accent: QColor) -> None:
+        """Paint style headwear + optional ears/beard over the head.
+
+        Coordinates are relative to the head centre (cx, cy) and head
+        half-height r. Kept geometric and restrained: an embroidered cap is
+        a cap arc with a diamond motif, a turban is layered wrap bands, a
+        kufi is a close skull cap with a single band.
+        """
+        try:
+            from core.avatar_styles import describe_style
+            desc = describe_style(self._style)
+        except Exception:
+            desc = {"headwear": "none"}
+
+        def _rgb(t):
+            try:
+                return QColor(int(t[0]), int(t[1]), int(t[2]))
+            except Exception:
+                return QColor(primary)
+
+        hw = desc.get("headwear", "none")
+        trim = _rgb(desc.get("trim_color", (198, 160, 60)))
+        hw_col = _rgb(desc.get("headwear_color", (8, 60, 72)))
+
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # ── ears (small, at the sides of the head) ───────────────────────
+        if self._ears:
+            p.setPen(QPen(_c(primary, 120), 1.2))
+            p.setBrush(QBrush(_c(hw_col if hw != "none" else primary, 60)))
+            for sgn in (-1, 1):
+                ex = cx + sgn * r * 0.92
+                p.drawEllipse(QPointF(ex, cy + r * 0.05), r * 0.10, r * 0.16)
+
+        # ── beard (subtle jaw shading, not a costume beard) ──────────────
+        if self._beard:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(_c(hw_col, 70)))
+            beard_rect = QRectF(cx - r * 0.42, cy + r * 0.34,
+                                r * 0.84, r * 0.42)
+            p.drawChord(beard_rect, 200 * 16, 140 * 16)
+
+        # ── headwear ──────────────────────────────────────────────────────
+        if hw == "kofia":
+            # Embroidered kofia: cap arc + diamond embroidery + collar band.
+            p.setPen(QPen(_c(primary, 160), 1.4))
+            p.setBrush(QBrush(_c(hw_col, 200)))
+            cap = QRectF(cx - r * 0.62, cy - r * 1.28, r * 1.24, r * 0.90)
+            p.drawChord(cap, 0, 180 * 16)
+            # Diamond embroidery motif along the cap edge.
+            p.setPen(QPen(trim, 1.1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            n = 7
+            for i in range(n):
+                a = math.pi * (0.12 + 0.76 * i / max(1, n - 1))
+                dx, dy = cx - r * 0.56, cy - r * 0.86
+                px = dx + math.cos(a) * r * 0.56
+                py = dy - math.sin(a) * r * 0.44
+                s = r * 0.045
+                p.drawPolygon(QPolygonF([
+                    QPointF(px, py - s), QPointF(px + s, py),
+                    QPointF(px, py + s), QPointF(px - s, py)]))
+            # Dishdasha-inspired collar band.
+            if desc.get("collar"):
+                p.setPen(QPen(trim, 1.2))
+                p.setBrush(QBrush(_c(_rgb(desc.get("collar_color",
+                                                   (240, 238, 230))), 90)))
+                p.drawRect(QRectF(cx - r * 0.34, cy + r * 0.78,
+                                  r * 0.68, r * 0.10))
+        elif hw == "turban":
+            # Scholar-style turban: layered wrap bands over a dark cap.
+            wraps = int(desc.get("wraps", 5) or 5)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(_c(_rgb(desc.get("cap_color",
+                                               (20, 30, 36))), 220)))
+            p.drawChord(QRectF(cx - r * 0.58, cy - r * 1.24,
+                               r * 1.16, r * 0.80), 0, 180 * 16)
+            for i in range(wraps):
+                y = cy - r * (1.02 - i * 0.13)
+                h = r * (0.16 - i * 0.012)
+                grad = QRadialGradient(cx, y, r * 0.7)
+                grad.setColorAt(0.0, _c(hw_col, 235))
+                grad.setColorAt(1.0, _c(hw_col, 150))
+                p.setBrush(QBrush(grad))
+                p.setPen(QPen(_c(trim, 90), 1.0))
+                p.drawEllipse(QRectF(cx - r * (0.60 - i * 0.02), y - h / 2,
+                                     r * (1.20 - i * 0.04), h))
+        elif hw == "kufi":
+            # Taqiyah skull cap: close-fitting cap + one geometric band.
+            p.setPen(QPen(_c(primary, 150), 1.3))
+            p.setBrush(QBrush(_c(hw_col, 210)))
+            p.drawChord(QRectF(cx - r * 0.55, cy - r * 1.18,
+                               r * 1.10, r * 0.72), 0, 180 * 16)
+            p.setPen(QPen(trim, 1.4))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx - r * 0.55, cy - r * 1.02,
+                             r * 1.10, r * 0.40), 0, 180 * 16)
     def _mouth_step(self, dt: float, amp: float, live: bool,
                     v_open: float | None, v_level: float | None) -> None:
         """One increment of the jaw. Called once per viseme frame while SHIRAZI
@@ -510,6 +637,7 @@ class HoloAvatar:
             self._paint_surface(p, xs, ys, norms, verts, primary, bg, amp)
         self._paint_wire(p, xs, ys, norms, verts, primary, bg, amp)
         self._paint_features(p, xs, ys, norms, r, primary, accent, bg, amp)
+        self._paint_headwear(p, cx, cy, r, primary, accent)
 
     def _paint_surface(self, p: QPainter, xs, ys, norms, verts,
                        primary: QColor, bg: QColor, amp: float) -> None:

@@ -106,6 +106,66 @@ _GREEK = {
     "φ": "f", "χ": "h", "ψ": "s", "ω": "o",
 }
 
+
+# ── Arabic script (Phase 5 improvement) ──────────────────────────────────────
+#
+# Urdu and Arabic are written in the Arabic script, which the old coverage rule
+# punted on entirely ("CJK, Arabic, Devanagari, Hebrew, Thai → audio-only").
+# That was honest but left the mouth under-articulated for two of Shirazi's
+# three core languages. The improvement below is deliberately narrow:
+#
+#   * It is per-LETTER articulation, not a pronunciation dictionary. Each
+#     letter maps to the Latin sound made at the same place of articulation
+#     (م is a bilabial nasal exactly like m → MBP; ف is labiodental like f).
+#     That is linguistics, not vocabulary, so it stays language-independent.
+#   * Urdu-specific letters are included (پ چ ٹ ڈ ڑ ژ گ ں ھ ے ہ ئ ؤ).
+#   * The vowel diacritics (harakat: fatha/kasra/damma) map to a/i/u.
+#
+# Honest limitations (documented, not hidden):
+#   * Short vowels are usually UNWRITTEN in Arabic/Urdu prose, so a word like
+#     "كتب" reads k-t-b with no vowel shapes between — the mouth still relies
+#     on the audio stream (core/formant.py) for the vowels, and the text
+#     supplies the consonant closures (the MBP/FV/TD shapes audio alone can
+#     never see). The two sources were designed to fuse exactly this way.
+#   * Dialect variation is approximated: ج is /dʒ/ in most Urdu/Arabic but /g/
+#     in Egyptian Arabic — it maps to S (the common case).
+#   * ء (hamza, glottal stop) reads as a brief REST — a catch in the voice,
+#     which is what a closed glottis looks like.
+_ARABIC = {
+    # Long vowels / matres lectionis
+    "ا": "a", "آ": "a", "أ": "a", "إ": "i", "ٱ": "a",
+    "و": "u", "ؤ": "u",
+    "ی": "i", "ي": "i", "ى": "a", "ئ": "i", "ے": "e",
+    # Bilabials → MBP (lips pressed shut — the shape audio cannot see)
+    "ب": "b", "پ": "p", "م": "m",
+    # Labiodental → FV
+    "ف": "f",
+    # Dentals/alveolars → TD / S / L / R by manner
+    "ت": "t", "ٹ": "t", "ط": "t",
+    "د": "d", "ڈ": "d", "ض": "d",
+    "ث": "s", "س": "s", "ص": "s",
+    "ذ": "z", "ز": "z", "ظ": "z", "ژ": "j",
+    "ن": "n", "ں": "n",
+    "ل": "l",
+    "ر": "r", "ڑ": "r",
+    # Sibilants/affricates → S
+    "ج": "j", "چ": "s", "ش": "s",
+    # Velars/glottals → K
+    "ک": "k", "ك": "k", "گ": "g", "ق": "k",
+    "خ": "h", "ح": "h", "ہ": "h", "ه": "h", "ھ": "h",
+    # Pharyngeals — ع is a voiced pharyngeal approximant; nearest mouth
+    # shape is an open vowel, غ is a voiced velar fricative → K
+    "ع": "a", "غ": "g",
+    # Hamza — glottal stop: a catch, rendered as a beat of REST
+    "ء": "",
+    # Harakat (short-vowel diacritics) — when present they are exact
+    "َ": "a", "ِ": "i", "ُ": "u",
+    "ً": "n", "ٍ": "n", "ٌ": "n",
+    "ْ": "", "ّ": "", "ٰ": "a", "ٓ": "a", "ٔ": "",
+    # Urdu/Persian extras
+    "ۂ": "h", "ۃ": "t",
+}
+
 # Below this share of mappable letters the text is in a script we cannot read
 # phonetically, and forcing shapes onto it would be worse than not trying.
 _MIN_COVERAGE = 0.55
@@ -138,6 +198,8 @@ def to_latin(ch: str) -> str:
         return _CYRILLIC[c]
     if c in _GREEK:
         return _GREEK[c]
+    if c in _ARABIC:
+        return _ARABIC[c]
     # Strip combining marks: é→e, ü→u, ş→s, ğ→g, ế→e, ñ→n, å→a …
     base = "".join(k for k in unicodedata.normalize("NFD", c)
                    if not unicodedata.combining(k))
@@ -273,3 +335,40 @@ class VisemeStream:
             o *= 1.0 - closure
             out.append((level, max(0.0, min(1.0, o)), max(-1.0, min(1.0, w))))
         return out
+
+# ── Formant → expressive viseme (Phase 5) ───────────────────────────────────
+#
+# core/formant.py yields continuous (openness, width) per 20 ms from the audio
+# spectrum. This maps that point to the nearest *expressive* VISEMES key so
+# renderers that want a labelled shape (the HUD mouth, debug overlays) get one.
+# Distance is weighted: openness (jaw/F1) dominates because it is the more
+# reliable cue; width (F2) breaks ties between e.g. E and I.
+#
+# Special cases:
+#   * level ≈ 0 → REST (silence is a shape, not a failure).
+#   * closure heuristic: voiced energy with near-zero openness means the lips
+#     are pressed together but the audio cannot say why — report MBP (the
+#     bilabial closure) rather than a vowel, because a closed mouth is the
+#     only honest reading of "sound with no jaw opening".
+
+def formant_to_viseme(openness: float, width: float, level: float = 1.0) -> str:
+    """Map a (openness 0..1, width −1..+1) formant frame to a VISEMES key."""
+    try:
+        o = float(min(1.0, max(0.0, openness)))
+        w = float(min(1.0, max(-1.0, width)))
+        lvl = float(level)
+    except (TypeError, ValueError):
+        return "REST"
+    if lvl <= 0.0:
+        return "REST"
+    if o < 0.08:
+        # Sound with (almost) no jaw opening: lips pressed shut.
+        return "MBP"
+    best, best_d = "REST", float("inf")
+    for key, (ko, kw, closure) in VISEMES.items():
+        if key == "REST" or closure > 0.5:
+            continue
+        d = (1.6 * (o - ko)) ** 2 + (0.9 * (w - kw)) ** 2
+        if d < best_d:
+            best, best_d = key, d
+    return best
