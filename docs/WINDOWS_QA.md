@@ -1,11 +1,19 @@
-# Windows QA — Phase 5 Desktop Experience (MANUAL)
+# Windows QA — Phases 5–9 (MANUAL where noted)
 
-Everything in this file must be checked by a human on a real Windows machine.
-The Linux sandbox has no PyQt6, no WASAPI/MME/DirectSound and no audio
-hardware, so none of the items below can be verified here — the automated
-suite (`python -m unittest discover -s tests`, 253 tests) covers only the
-headless logic of all phases through Phase 8. Do not mark an item done
-until you have seen it with your own eyes.
+Everything marked MANUAL must be checked by a human on a real Windows
+machine. The Linux sandbox has no PyQt6, no WASAPI/MME/DirectSound and no
+audio hardware, so none of the items below can be verified there — the
+automated suite (`python -m unittest discover -s tests`, **300+ tests**) plus
+the 7 dedicated integration tests
+(`python -m unittest tests.test_phase9_integration`) cover only the headless
+logic of all phases through Phase 9. Do not mark an item done until you have
+seen it with your own eyes.
+
+> **Explicitly UNVERIFIED (Windows-only runtime):** real audio device APIs
+> (WASAPI/MME/DirectSound), PyQt6 rendering, global hotkeys, firewall rules,
+> the Windows app-launcher path (`os.startfile`), mobile-on-LAN against a
+> real phone, and live AI providers. These are exercised on real hardware
+> only — never claimed from CI.
 
 ## 1. Rendering
 
@@ -202,6 +210,35 @@ items need a human with two devices on the real LAN.
 - [ ] HTTPS: with the desktop's `shirazi.crt` trusted on the phone,
       `/api/v1/*` works over HTTPS; the self-signed cert is reused
       across restarts (no re-trust needed).
+
+## 11. Phase 9 hardening (MANUAL)
+
+Automated coverage: 39 hardening tests
+(`tests/test_phase9_hardening.py`) + 7 integration tests — all passing in
+CI. These items need a real Windows machine:
+
+- [ ] **Fresh install:** on a clean Windows VM, `py setup.py` installs all
+      `requirements.txt` entries including the new `keyring` and `plyer`
+      declarations; `py main.py` starts without import errors.
+- [ ] **Revocation cascade (real restart):** pair a phone, restart the
+      desktop, confirm the phone still works (device token now served from
+      the persistent registry with its minted channel key); then
+      **Revoke devices** → the phone stops working until re-paired, with
+      no lingering in-memory bearer.
+- [ ] **Window-title sanitiser (real PowerShell):** voice-command a window
+      focus with a hostile title (quotes/backticks/`$`/newlines in the
+      title) → the focus action succeeds and no PowerShell error or
+      injection occurs.
+- [ ] **App launcher:** "open <app>" launches the app; a URL opens the
+      default browser (via `os.startfile`, no `cmd.exe` window flashes).
+- [ ] **`code_helper` confirmation:** asking the assistant to run or build
+      code pops the confirmation banner (it did not before Phase 9); an
+      `explain` request does not prompt.
+- [ ] **Dependency audit result:** `keyring` (OS credential store) and
+      `plyer` (notification fallback) are declared in `requirements.txt`
+      as of Phase 9; Playwright and tesseract remain optional and degrade
+      honestly (browser tools report load errors, vision reports
+      "unavailable").
 
 ## Sign-off
 
