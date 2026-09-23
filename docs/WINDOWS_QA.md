@@ -3,8 +3,8 @@
 Everything in this file must be checked by a human on a real Windows machine.
 The Linux sandbox has no PyQt6, no WASAPI/MME/DirectSound and no audio
 hardware, so none of the items below can be verified here — the automated
-suite (`python -m unittest discover -s tests`, 189 tests) covers only the
-headless logic of all phases through Phase 7. Do not mark an item done
+suite (`python -m unittest discover -s tests`, 253 tests) covers only the
+headless logic of all phases through Phase 8. Do not mark an item done
 until you have seen it with your own eyes.
 
 ## 1. Rendering
@@ -167,6 +167,41 @@ dashboard URL is `http(s)://<desktop-ip>:<port>/`.
       `chrome://flags` insecure-origins steps and the mic works after
       them. (A legacy `jarvis.crt`-paired phone keeps working — the
       server reuses the old cert.)
+
+## 10. SaaS foundation (Phase 8 — MANUAL)
+
+The automated suite (253 tests) covers the headless logic below; these
+items need a human with two devices on the real LAN.
+
+- [ ] Desktop boots with no `config/shirazi_accounts.db`: the `local`
+      admin is auto-created silently and every old flow (voice loop,
+      PIN pairing, `/api/command`) works exactly as before.
+- [ ] `GET /api/v1/health` (no token) returns `ok: true`; every other
+      `/api/v1/*` without a bearer returns 401.
+- [ ] Pair a phone via the normal PIN flow, then `GET /api/v1/me` with
+      that bearer: shows the `local` admin. `POST /api/v1/logout`
+      revokes it — the phone must re-pair.
+- [ ] `POST /api/v1/devices` returns a `device_token` once; logging in
+      with it via `/api/device-login` works; `DELETE
+      /api/v1/devices/{id}` revokes the device AND its sessions (the
+      phone stops working until re-paired).
+- [ ] Restart the dashboard server: an already-paired phone keeps
+      working (device token now served from the persistent registry,
+      not just memory).
+- [ ] `GET /api/v1/providers`: `key_configured` is a boolean, no key
+      material anywhere in the response. POSTing
+      `{"provider":"x","api_key":"EVIL"}` to `/api/v1/providers/config`
+      returns 400.
+- [ ] FREE-FIRST: try to disable every free/local provider or set a
+      chain with no free rung — the API must refuse (400). Paid
+      providers stay unavailable until `POST
+      /api/v1/providers/paid-opt-in` with `{"opt_in": true}`.
+- [ ] `GET /api/v1/usage` shows request counters after real provider
+      calls; notes honestly state tokens are 0 and Live voice is
+      uncounted.
+- [ ] HTTPS: with the desktop's `shirazi.crt` trusted on the phone,
+      `/api/v1/*` works over HTTPS; the self-signed cert is reused
+      across restarts (no re-trust needed).
 
 ## Sign-off
 

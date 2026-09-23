@@ -558,7 +558,11 @@ def _read(name: str) -> str:
 
 class DashboardServer:
 
-    def __init__(self):
+    def __init__(self, account_store=None):
+        """account_store: optional core.accounts.AccountStore (tests /
+        embedders). When omitted, the default config/shirazi_accounts.db
+        store is used and the "local" single-user account is ensured."""
+        self._injected_store = account_store
         self._ip                          = _local_ip()
         self._tokens: set[str]            = set()
         self._token_keys: dict[str, str]  = {}   # auth_token → session_key
@@ -575,6 +579,34 @@ class DashboardServer:
         self._uploads_dir                 = UPLOADS_DIR
         self._login_html                  = _read("login.html")
         self._app_html                    = _read("app.html")
+        # -- Phase 8: SaaS sessions -- the general mechanism. The dashboard's
+        # bearer-token auth is the single-user instance of it: every token
+        # minted below is adopted into the SessionManager for the "local"
+        # admin user, gaining expiry/revocation/persistence. The legacy
+        # in-memory sets stay as a compat fallback and are consulted first,
+        # so the existing single-user flow behaves exactly as before.
+        # Guarded: the dashboard must boot even if the accounts layer fails.
+        self._accounts = None
+        self._sessions = None
+        self._usage = None
+        self._local_user_id = "local"
+        try:
+            from core.accounts import (AccountStore, SessionManager,
+                                       UsageTracker, ensure_local_user)
+            from core.accounts.usage import install_registry_recorder
+            self._accounts = (self._injected_store
+                                if self._injected_store is not None
+                                else AccountStore())
+            self._local_user_id = ensure_local_user(self._accounts)
+            self._sessions = SessionManager(self._accounts)
+            self._usage = UsageTracker(self._accounts)
+            try:
+                install_registry_recorder(self._accounts, self._local_user_id)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Dashboard] accounts layer unavailable ({e}) -- "
+                  f"in-memory auth only")
         self.app                          = self._build_app()
         # ── Phase 7: mobile dashboard state ─────────────────────────────
         self._agent             = None   # set_agent() by main.py
@@ -883,12 +915,58 @@ class DashboardServer:
 
     def _decrypt(self, token: str, enc_b64: str) -> str | None:
         sk = self._token_keys.get(token)
+        if not sk and self._sessions is not None:
+            # Phase 8: token adopted into the session manager (e.g. after a
+            # restart the in-memory map is empty but the session persists).
+            try:
+                sk = self._sessions.session_key_for(token)
+            except Exception:
+                sk = None
         if not sk:
             return None
         try:
             return _decrypt_cbc(self._aes_key(sk), enc_b64)
         except Exception:
             return None
+
+    # -- Phase 8: general session mechanism (single-user instance) --------
+    def _session_valid(self, token: str) -> bool:
+        """True when the token is a live session (general mechanism)."""
+        if self._sessions is None or not token:
+            return False
+        try:
+            return self._sessions.validate(token) is not None
+        except Exception:
+            return False
+
+    def _register_session(self, token: str, session_key: str = "",
+                          *, label: str = "", kind: str = "bearer") -> None:
+        """Adopt a freshly-minted bearer into the session manager. The
+        legacy in-memory set keeps working alongside (compat fallback)."""
+        if self._sessions is None:
+            return
+        try:
+            self._sessions.adopt(self._local_user_id, token,
+                                 session_key=session_key or "",
+                                 label=label, kind=kind)
+        except Exception:
+            pass
+
+    def _auth_token(self, token: str):
+        """Validate a bearer token -> user_id (or None). Used by /api/v1."""
+        token = (token or "").strip()
+        if not token:
+            return None
+        if token in self._tokens:
+            return self._local_user_id
+        if self._sessions is not None:
+            try:
+                s = self._sessions.validate(token)
+                if s:
+                    return s["user_id"]
+            except Exception:
+                pass
+        return None
 
     # ── callbacks ────────────────────────────────────────────────────────
 
@@ -926,7 +1004,18 @@ class DashboardServer:
 
         def _auth(req: Request) -> bool:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
-            return bool(tok) and tok in self._tokens
+            if not tok:
+                return False
+            # Legacy in-memory set first (compat), then the general
+            # session mechanism (Phase 8).
+            return tok in self._tokens or self._session_valid(tok)
+
+        # Phase 8: versioned SaaS API surface (/api/v1/...)
+        try:
+            from dashboard.api_v1 import register_api_v1
+            register_api_v1(app, self)
+        except Exception as e:
+            print(f"[Dashboard] /api/v1 unavailable ({e})")
 
         # serve CryptoJS from local cache, fallback to CDN redirect
         @app.get("/static/crypto.js")
@@ -969,6 +1058,7 @@ class DashboardServer:
                 self._tokens.add(tok)
                 self._token_keys[tok] = entered
                 self._aes_key(entered)                   # pre-derive & cache
+                self._register_session(tok, entered, label="pin-login")
                 if self._connect_callback:
                     self._connect_callback()
                 asyncio.create_task(self.broadcast(
@@ -1012,6 +1102,15 @@ class DashboardServer:
             self._token_keys[tok] = key
             self._aes_key(key)
             self._device_sessions[dev_tok] = {"session_key": key}
+            # Phase 8: the same credentials in the general mechanism.
+            self._register_session(tok, key, label="qr-pairing")
+            if self._sessions is not None:
+                try:
+                    self._sessions.register_device_token(
+                        self._local_user_id, dev_tok, name="phone",
+                        kind="phone", session_key=key)
+                except Exception:
+                    pass
 
             if self._connect_callback:
                 self._connect_callback()
@@ -1051,14 +1150,28 @@ class DashboardServer:
                      "error": f"Too many attempts. Try again in {int(locked)}s."},
                     status_code=429)
             dev_tok = (body.get("device_token") or "").strip()
-            if not dev_tok or dev_tok not in self._device_sessions:
+            rec = self._device_sessions.get(dev_tok) if dev_tok else None
+            session_key = rec["session_key"] if rec else None
+            if session_key is None and self._sessions is not None:
+                # Phase 8: device registry survives restarts (the in-memory
+                # map above does not). Legacy jarvis_device_token values
+                # validate by token *value* either way (LEGACY_COMPAT §4).
+                try:
+                    session_key = self._sessions.device_session_key(dev_tok)
+                    if session_key:
+                        self._device_sessions[dev_tok] = {
+                            "session_key": session_key}
+                        self._sessions.touch_device(dev_tok)
+                except Exception:
+                    session_key = None
+            if not dev_tok or not session_key:
                 return JSONResponse({"ok": False}, status_code=401)
                 self._pin_failed(ip)
-            session_key = self._device_sessions[dev_tok]["session_key"]
             tok = secrets.token_urlsafe(32)
             self._tokens.add(tok)
             self._token_keys[tok] = session_key
             self._aes_key(session_key)
+            self._register_session(tok, session_key, label="device-login")
             if self._connect_callback:
                 self._connect_callback()
             asyncio.create_task(self.broadcast(
@@ -1073,6 +1186,12 @@ class DashboardServer:
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             count = len(self._device_sessions)
             self._device_sessions.clear()
+            if self._sessions is not None:
+                try:
+                    count += self._sessions.revoke_all_devices(
+                        self._local_user_id)
+                except Exception:
+                    pass
             return JSONResponse({"ok": True, "revoked": count})
 
         @app.post("/api/command")

@@ -270,16 +270,26 @@ def _cooling(model: str) -> bool:
 
 
 def api_key(refresh: bool = False) -> str:
-    """The Gemini key from config/api_keys.json. Cached; never raises."""
+    """The Gemini key. Resolution order (Phase 8): env GEMINI_API_KEY →
+    encrypted secret store → legacy plaintext config/api_keys.json
+    (read-only compat; the encrypted-store migration is explicit/opt-in
+    in Phase 8, not yet run at boot). Cached; never raises."""
     global _cached_key
     with _key_lock:
         if _cached_key is not None and not refresh:
             return _cached_key
         try:
-            data = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
-            _cached_key = str(data.get("gemini_api_key") or "")
+            from core.accounts import secrets as _secrets
+            _cached_key = _secrets.resolve_key("gemini_api_key",
+                                               "GEMINI_API_KEY")
         except Exception:
             _cached_key = ""
+        if not _cached_key:
+            try:
+                data = json.loads(_KEY_FILE.read_text(encoding="utf-8"))
+                _cached_key = str(data.get("gemini_api_key") or "")
+            except Exception:
+                _cached_key = ""
         return _cached_key
 
 

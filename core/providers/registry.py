@@ -49,6 +49,30 @@ _lock = threading.Lock()
 _config_cache: Optional[dict] = None
 _providers_cache: dict[str, AIProvider] = {}
 
+# ── Phase 8: usage recording hook ─────────────────────────────────────────
+# core/accounts/usage.py installs a recorder via set_usage_recorder() so
+# registry-routed calls count per-user/per-provider usage automatically.
+# The hook is best-effort: it must never raise into generate() and never
+# block it. Signature: fn(user_id, provider, kind, amount=1).
+_usage_recorder = None
+
+
+def set_usage_recorder(fn) -> None:
+    """Install the usage recorder (core/accounts/usage.install_registry_recorder)."""
+    global _usage_recorder
+    _usage_recorder = fn
+
+
+def _record_usage(user_id: str, provider: str, kind: str,
+                  amount: int = 1) -> None:
+    fn = _usage_recorder
+    if fn is None:
+        return
+    try:
+        fn(user_id or "local", provider, kind, amount)
+    except Exception:
+        pass  # tracking is best-effort; generation must not fail
+
 
 def load_config(refresh: bool = False) -> dict:
     """config/providers.json as a dict. Cached; missing file → empty chain."""
@@ -114,12 +138,18 @@ def available_providers() -> list[dict[str, Any]]:
 
 
 def generate(prompt: str, *, system: str = "", timeout_s: float = 30.0,
-             json_mode: bool = False, skip: tuple[str, ...] = ()) -> ProviderResult:
+             json_mode: bool = False, skip: tuple[str, ...] = (),
+             user_id: str = "local") -> ProviderResult:
     """Generate text via the provider chain. Never raises, never returns None.
 
     On total failure the result text is a plain-language explanation the
     assistant can speak — including what the user can do (check key, go
     offline, wait out the rate limit). No API keys or tracebacks leak.
+
+    `user_id` attributes usage to an account (Phase 8); the default "local"
+    is the single-user desktop account. Each provider *attempt* records one
+    "requests" event and each ProviderError one "errors" event via the
+    installed usage recorder (best-effort, never raises).
     """
     failures: list[tuple[str, str]] = []
     tried_any = False
@@ -135,13 +165,16 @@ def generate(prompt: str, *, system: str = "", timeout_s: float = 30.0,
             failures.append((name, f"unavailable: {reason}"))
             continue
         tried_any = True
+        _record_usage(user_id, name, "requests")
         try:
             result = provider.complete(prompt, system=system,
                                        timeout_s=timeout_s, json_mode=json_mode)
         except ProviderError as e:
+            _record_usage(user_id, name, "errors")
             failures.append((name, f"{type(e).__name__}: {e.reason or e}"))
             continue
         except Exception as e:  # noqa: BLE001 — last-resort net, stay honest
+            _record_usage(user_id, name, "errors")
             failures.append((name, f"unexpected failure: {type(e).__name__}"))
             continue
         result.used_fallback = bool(failures)

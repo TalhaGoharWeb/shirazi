@@ -183,6 +183,12 @@ def default_level_for(tool_name: str) -> Level:
     return _DEFAULT_LEVELS.get(tool_name, Level.USER_CONFIRMATION)
 
 
+def known_tools() -> list[str]:
+    """Every tool with a shipped default level (public for the per-user
+    policy layer in core/accounts/permissions.py)."""
+    return sorted(_DEFAULT_LEVELS)
+
+
 @dataclass
 class CheckResult:
     allowed: bool

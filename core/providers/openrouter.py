@@ -32,8 +32,18 @@ class OpenRouterProvider(AIProvider):
         self._free_only = bool(self._cfg.get("free_only", True))
         self._transport = transport  # injected in tests: fn(url, headers, payload, timeout)
 
-    # ── Key resolution: env first, then config/api_keys.json key_config ────────
+    # ── Key resolution: env → encrypted secret store → legacy plaintext ──
+    # (Phase 8: core/accounts/secrets.resolve_key; the api_keys.json read
+    # is the read-only legacy fallback so existing users keep working.
+    # The encrypted-store migration is explicit/opt-in in Phase 8.)
     def _key(self) -> str:
+        try:
+            from core.accounts import secrets as _secrets
+            return _secrets.resolve_key(
+                self._cfg.get("key_config", "openrouter_api_key"),
+                self._cfg.get("key_env", "OPENROUTER_API_KEY"))
+        except Exception:
+            pass
         env_name = self._cfg.get("key_env", "OPENROUTER_API_KEY")
         if os.environ.get(env_name):
             return os.environ[env_name]

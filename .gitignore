@@ -6,6 +6,11 @@
 
 # ── Secrets. Committing any of these publishes them. ──────────────────────────
 config/api_keys.json          # your Gemini API key, plus per-plugin credentials
+# Phase 8 SaaS foundation artifacts (created at runtime, never committed)
+config/api_keys.json.bak*
+config/shirazi_accounts.db
+config/credentials.enc
+config/.secret_key
 config/certs/                 # the dashboard's TLS private key and certificate
 config/whatsapp_web/          # a LINKED WhatsApp session — committing it hands
                               # somebody your WhatsApp account, not just a key

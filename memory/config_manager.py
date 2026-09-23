@@ -37,22 +37,115 @@ def load_settings() -> dict:
         print(f"Config warning: could not read settings.json: {e}")
         return {}
 
-def save_api_keys(gemini_api_key: str) -> None:
-    ensure_config_dir()
+def _secret_store():
+    """The Phase-8 encrypted secret store, or None when unavailable."""
+    try:
+        from core.accounts import secrets as _secrets
+        return _secrets.get_store()
+    except Exception:
+        return None
 
+
+def save_api_keys(gemini_api_key: str) -> None:
+    """Persist the Gemini API key.
+
+    Phase 8: writes into the ENCRYPTED secret store when a secure
+    backend exists, and ALSO keeps the legacy plaintext copy -- twelve
+    action modules still read config/api_keys.json directly with no
+    fallback chain (see docs/SAAS.md section 8), so removing the
+    plaintext copy here would break the single-user desktop flow. The
+    deferred boot migration consolidates once those readers move to
+    secrets.resolve_key(). Falls back to plaintext-only when no secure
+    backend exists (refusing to save would lose the user's key)."""
+    key = (gemini_api_key or "").strip()
+    if not key:
+        return
+    store = _secret_store()
+    if store is not None and store.has_secure_backend:
+        try:
+            store.set("gemini_api_key", key)
+        except Exception as e:
+            print(f"Config warning: encrypted store failed ({e}); "
+                  f"keeping plaintext until a secure backend exists")
+    # Legacy plaintext copy: still required by the action modules that
+    # read config/api_keys.json directly (deferred migration -- above).
+    ensure_config_dir()
     data: dict = {}
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             data = {}
+    data["gemini_api_key"] = key
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    data["gemini_api_key"] = gemini_api_key.strip()
 
-    CONFIG_FILE.write_text(
-        json.dumps(data, indent=2),
-        encoding="utf-8"
-    )
+def get_secret(name: str) -> str | None:
+    """Resolve a secret: env -> encrypted store -> legacy plaintext."""
+    store = _secret_store()
+    if store is not None:
+        try:
+            v = store.get(name)
+            if v:
+                return v
+        except Exception:
+            pass
+    return load_api_keys().get(name)
+
+
+def set_secret(name: str, value: str) -> bool:
+    """Store a secret encrypted. Returns True when it landed in a secure
+    backend, False when it fell back to plaintext (no backend).
+
+    Like save_api_keys, the legacy plaintext copy is kept: action
+    modules still read config/api_keys.json directly (see docs/SAAS.md
+    section 8)."""
+    store = _secret_store()
+    if store is not None and store.has_secure_backend:
+        try:
+            store.set(name, value)
+            return True
+        except Exception:
+            pass
+    ensure_config_dir()
+    data = load_api_keys()
+    data[name] = value
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return False
+
+
+def delete_secret(name: str) -> bool:
+    """Delete a secret from the encrypted store AND the legacy plaintext
+    file. Unlike set, delete removes everywhere: an explicitly deleted
+    secret must not linger in either copy."""
+    store = _secret_store()
+    removed = False
+    if store is not None:
+        try:
+            removed = store.delete(name)
+        except Exception:
+            pass
+    try:
+        if CONFIG_FILE.exists():
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and name in data:
+                del data[name]
+                CONFIG_FILE.write_text(json.dumps(data, indent=2),
+                                       encoding="utf-8")
+                removed = True
+    except Exception:
+        pass
+    return removed
+
+
+def migrate_secrets_to_encrypted_store() -> dict:
+    """Idempotent boot-time migration: api_keys.json -> encrypted store.
+    See core/accounts/secrets.migrate_api_keys_json for the report shape."""
+    try:
+        from core.accounts import secrets as _secrets
+        return _secrets.ensure_migrated()
+    except Exception as e:
+        return {"migrated": False, "reason": f"accounts layer unavailable: {e}"}
 
 def load_api_keys() -> dict:
     if not CONFIG_FILE.exists():
@@ -64,6 +157,15 @@ def load_api_keys() -> dict:
         return {}
 
 def get_gemini_key() -> str | None:
+    """Resolution order: GEMINI_API_KEY env -> encrypted secret store ->
+    legacy plaintext api_keys.json (compat; migrated at boot)."""
+    try:
+        from core.accounts import secrets as _secrets
+        v = _secrets.resolve_key("gemini_api_key", "GEMINI_API_KEY")
+        if v:
+            return v
+    except Exception:
+        pass
     return load_api_keys().get("gemini_api_key")
 
 def is_configured() -> bool:

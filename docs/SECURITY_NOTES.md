@@ -65,6 +65,48 @@ Still deferred to Phase 8 (unchanged from the plan above): replacing the
 6-char PIN flow with multi-user auth, rotating/fixing the AES salt
 derivation, dropping the plaintext fallback entirely, TLS-by-default.
 
+## What changed in Phase 8
+
+1. **Encrypted secret store** (`core/accounts/secrets.py`): resolution
+   order is now env → OS keyring (when usable) → AES-256-GCM encrypted
+   file (`config/credentials.enc`, data key in `config/.secret_key`,
+   chmod 600) → legacy plaintext `config/api_keys.json` (read-only,
+   one-time stderr note). `set()` fails closed when no secure backend
+   exists. Key names (never values) appear in logs/reports.
+2. **Central key paths migrated**: `core/gemini.py`, 
+   `core/providers/openrouter.py`, and
+   `memory/config_manager.get_gemini_key()` resolve through the same
+   chain. Behaviour is unchanged when no encrypted store exists (falls
+   through to the legacy file).
+3. **Migration implemented but NOT auto-run at boot** (deliberate):
+   `migrate_api_keys_json()` is idempotent, backup-first
+   (`api_keys.json.bak`, timestamped on later runs), fail-closed, and
+   leaves non-secret preferences in place — but twelve modules still
+   read secrets directly from `config/api_keys.json` with no fallback
+   (`actions/web_search.py`, `dev_agent.py`, `code_helper.py`,
+   `computer_control.py`, `computer_settings.py`, `desktop.py`,
+   `file_processor.py`, `flight_finder.py`, `screen_processor.py`,
+   `youtube_video.py`, plus prefs-only reads in `send_message.py` /
+   `core/llm_client.py`). Removing keys at boot would break the desktop
+   flow, so boot wiring waits until those readers move to
+   `secrets.resolve_key()`. See `docs/SAAS.md` §8.
+4. **Session tokens stored hashed**: `/api/v1` sessions persist only
+   SHA-256 hashes; raw bearer/device tokens are never in the DB.
+   API responses show at most a 12-char hash prefix.
+5. **Keys excluded from the API by design**: `/api/v1/providers*`
+   reject `api_key`/`key`/`secret`/`token` fields with 400 and report
+   only `key_configured: bool`. Device tokens are returned once at
+   registration.
+6. **Per-user permission overrides** (`core/accounts/permissions.py`)
+   can only tighten, never loosen, the global `core.permissions` risk
+   levels.
+
+Still deferred after Phase 8: password/OIDC login (multi-user storage
+exists; remote login does not), replacing the 6-char PIN pairing flow,
+rotating/fixing the AES salt derivation, dropping the plaintext `text`
+fallback entirely, TLS-by-default, and boot auto-migration (blocked on
+item 3 above).
+
 ## Planned (do NOT implement before the scheduled phases)
 
 - **Phase 3/4:** migrate `config/api_keys.json` to an encrypted store (OS
