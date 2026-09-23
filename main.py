@@ -271,6 +271,43 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
+def _validate_gemini_key(key: str, timeout: float = 12.0) -> "tuple[bool, str]":
+    """Cheap REST check of a Gemini API key against the stable v1beta API.
+
+    Returns (ok, message). Never raises and never logs the key itself.
+    Distinguishes a truly bad key from a blocked key (403/API not enabled)
+    and from plain network trouble, so the UI can say what is actually wrong.
+    """
+    import urllib.request, urllib.error, urllib.parse
+    key = (key or "").strip()
+    if not key:
+        return False, "the saved key is empty"
+    url = ("https://generativelanguage.googleapis.com/v1beta/models?"
+           + urllib.parse.urlencode({"key": key}))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SHIRAZI/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            json.load(resp)
+        return True, "ok"
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read(2000).decode("utf-8", "replace"))
+            msg = str((detail.get("error") or {}).get("message", "") or e)
+        except Exception:
+            msg = f"HTTP {e.code}"
+        if e.code == 400 and "API key not valid" in msg:
+            return (False, "Google rejected the key (API key not valid) — "
+                    "create a fresh key at Google AI Studio (aistudio.google.com) "
+                    "and paste it in again")
+        if e.code == 403:
+            return (False, "key recognised but blocked: " + msg[:160] + " — "
+                    "enable the Generative Language API for your project and "
+                    "remove any HTTP-referrer / IP restrictions on the key")
+        return False, f"HTTP {e.code}: {msg[:160]}"
+    except Exception as e:
+        return False, f"network problem reaching Google: {type(e).__name__} {str(e)[:120]}"
+
+
 def _load_system_prompt() -> str:
     try:
         return PROMPT_PATH.read_text(encoding="utf-8")
@@ -2405,7 +2442,28 @@ class ShiraziLive:
 
                 # Invalid API key — stop hammering the API, prompt re-configuration
                 if "API key not valid" in err_str or "1007" in err_str:
-                    self.ui.write_log("ERR: API key invalid — please re-enter your key.")
+                    # v1alpha (proactive-audio preview) rejects ordinary AI
+                    # Studio keys even when they are perfectly valid. That is
+                    # NOT a bad key — silently drop to stable v1beta first.
+                    if self._enhanced_live:
+                        self._enhanced_live = False
+                        print("[SHIRAZI] v1alpha rejected the key — retrying on v1beta.")
+                        self.ui.write_log("SYS: Voice server wanted another channel — retrying…")
+                        _conn_backoff = 3
+                        continue
+                    # v1beta itself rejected it: find out WHY before nagging.
+                    try:
+                        _saved = _get_api_key()
+                    except Exception:
+                        _saved = ""
+                    _ok, _why = _validate_gemini_key(_saved)
+                    if _ok:
+                        # Key is fine — transient server-side rejection. Retry
+                        # quietly instead of asking the user to retype it.
+                        print("[SHIRAZI] key validates OK — transient rejection, retrying.")
+                        _conn_backoff = 5
+                        continue
+                    self.ui.write_log(f"ERR: API key invalid — {_why}")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
                     while not self.ui._win._ready:
