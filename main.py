@@ -2231,6 +2231,24 @@ class ShiraziLive:
             from dashboard.server import DashboardServer
             self._dashboard = DashboardServer()
             self._dashboard.set_connect_callback(self._on_phone_connected)
+            # Phase 7: wire the mobile dashboard to the agent engine, the
+            # Phase-5 device manager and the backend status probe. Each is
+            # optional — the dashboard degrades honestly when one is missing.
+            try:
+                self._dashboard.set_agent(getattr(self, "agent", None))
+            except Exception as e:
+                print(f"[Dashboard] agent wiring failed: {e}")
+            try:
+                self._dashboard.set_device_manager(
+                    getattr(self, "_device_manager", None))
+            except Exception as e:
+                print(f"[Dashboard] device-manager wiring failed: {e}")
+            try:
+                self._dashboard.set_backend_status_fn(
+                    lambda: {"live": bool(getattr(self, "session", None)),
+                             "awake": bool(getattr(self, "_awake", False))})
+            except Exception as e:
+                print(f"[Dashboard] backend-status wiring failed: {e}")
             asyncio.create_task(self._dashboard.serve())
             # Runs for the whole lifetime, not just inside an active session
             asyncio.create_task(self._process_dashboard_commands())

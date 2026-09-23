@@ -55,6 +55,14 @@ class AgentStatus(str, Enum):
     PARTIAL = "partial"                           # some steps done, then stopped
 
 
+# Sentinel for "use the agent's configured confirm_hook". A per-call
+# confirm_hook=None explicitly means *no* hook (desktop banner / PENDING
+# path); omitting the kwarg keeps the configured default. Added in Phase 7
+# so the mobile dashboard can route confirmations to the phone without
+# mutating the shared agent's hook (which the Live loop also uses).
+_UNSET = object()
+
+
 @dataclass
 class AgentResult:
     status: AgentStatus
@@ -126,9 +134,15 @@ class Agent:
         return sorted(self._dispatch)
 
     # ── Single gated tool call (main.py::_execute_tool path) ─────────────
-    def execute_tool(self, name: str, args: Optional[dict] = None) -> str:
-        """Permission-gated single tool execution. Never bypasses the gate."""
+    def execute_tool(self, name: str, args: Optional[dict] = None,
+                     *, confirm_hook=_UNSET) -> str:
+        """Permission-gated single tool execution. Never bypasses the gate.
+
+        `confirm_hook` overrides the agent's configured hook for this call
+        only (Phase 7: the dashboard passes its phone hook here instead of
+        mutating shared state)."""
         args = dict(args or {})
+        hook = self.confirm_hook if confirm_hook is _UNSET else confirm_hook
         gate = permissions.check(name, args)
         events.emit("tool.called", {"name": name,
                                     "permission": gate.level.value})
@@ -141,9 +155,9 @@ class Agent:
             return f"Unknown tool: {name}"
         if gate.needs_confirmation:
             logger.warn("agent", f"'{name}' needs confirmation — {gate.reason}")
-            if self.confirm_hook is not None:
+            if hook is not None:
                 try:
-                    ok = bool(self.confirm_hook(name, args, gate.reason))
+                    ok = bool(hook(name, args, gate.reason))
                 except Exception as e:
                     logger.error("agent", f"confirm hook failed: {e}")
                     return f"Confirmation failed ({e}) — '{name}' was not run."
@@ -182,8 +196,9 @@ class Agent:
                     f"to try a different approach.")
 
     # ── The loop ──────────────────────────────────────────────────────────
-    async def run(self, request: str) -> AgentResult:
+    async def run(self, request: str, *, confirm_hook=_UNSET) -> AgentResult:
         t0 = time.monotonic()
+        hook = self.confirm_hook if confirm_hook is _UNSET else confirm_hook
         request = (request or "").strip()
         logger.listening(f"agent request: {request[:80]}")
         if not request:
@@ -239,7 +254,8 @@ class Agent:
                 logger.error("agent", f"denied at step {step_no}: {gate.reason}")
                 break
             if gate.needs_confirmation:
-                outcome = await self._confirm_step(loop, step, gate.reason)
+                outcome = await self._confirm_step(loop, step, gate.reason,
+                                                   hook)
                 if outcome == "pending":
                     result.status = AgentStatus.PENDING_CONFIRMATION
                     result.pending = {"tool": step.tool, "args": step.args,
@@ -273,15 +289,19 @@ class Agent:
         return result
 
     def run_sync(self, request: str,
-                 timeout: Optional[float] = None) -> AgentResult:
+                 timeout: Optional[float] = None,
+                 *, confirm_hook=_UNSET) -> AgentResult:
         """Run the loop on a worker thread with its own event loop — the
         caller's thread (e.g. the UI thread) is never blocked."""
-        fut = self._bg_pool.submit(asyncio.run, self.run(request))
+        fut = self._bg_pool.submit(asyncio.run, self.run(request,
+                                                         confirm_hook=confirm_hook))
         return fut.result(timeout=timeout)
 
-    def run_in_background(self, request: str) -> concurrent.futures.Future:
+    def run_in_background(self, request: str,
+                          *, confirm_hook=_UNSET) -> concurrent.futures.Future:
         """Fire-and-forget: returns a Future<AgentResult> immediately."""
-        return self._bg_pool.submit(asyncio.run, self.run(request))
+        return self._bg_pool.submit(asyncio.run, self.run(
+            request, confirm_hook=confirm_hook))
 
     def close(self) -> None:
         if not self._closed:
@@ -296,12 +316,13 @@ class Agent:
         except Exception:
             return Level.USER_CONFIRMATION.value
 
-    async def _confirm_step(self, loop, step: PlanStep, reason: str) -> str:
+    async def _confirm_step(self, loop, step: PlanStep, reason: str,
+                            hook) -> str:
         """'confirmed' | 'cancelled' | 'pending'."""
-        if self.confirm_hook is not None:
+        if hook is not None:
             try:
                 ok = await loop.run_in_executor(
-                    self._pool, self.confirm_hook,
+                    self._pool, hook,
                     step.tool, step.args, reason)
                 events.emit("tool.confirmed" if ok else "tool.denied",
                             {"name": step.tool})

@@ -17,6 +17,17 @@ import socket
 import string
 import time
 from pathlib import Path
+import json
+import threading
+import urllib.parse
+
+# pyautogui is a hard runtime dep of the desktop app, but the dashboard
+# must stay importable without it (tests, standalone runs). It is used
+# only to resync the touchpad cursor estimate — guarded everywhere.
+try:
+    import pyautogui as _pag
+except Exception:
+    _pag = None
 
 _DEPS_OK = False
 try:
@@ -47,6 +58,50 @@ MAX_UPLOAD_MB = 500
 PIN_MAX_ATTEMPTS   = 5      # failed attempts before lockout
 PIN_LOCKOUT_SECS   = 300    # lockout duration in seconds (5 min)
 PIN_ATTEMPT_WINDOW = 600    # failures older than this stop counting (10 min)
+
+# ── Phase 7: mobile dashboard (Siri-like voice, remote control) ─────────────
+# Security model for the command channel (/ws/cmd): every message maps to
+# ONE allowlisted tool with validated, typed parameters. permissions.check()
+# validates every call (unknown tools fail closed, PRIVILEGED is denied).
+# USER_CONFIRMATION-level remote-control tools (click, key press, app open)
+# are treated as human-authorized: the physical tap on a PIN-paired phone
+# IS the explicit approval. Free-text /api/agent keeps the strict per-step
+# Approve/Deny phone flow, because the agent may plan risky multi-step work.
+CONFIRM_TIMEOUT_SECS = 90.0   # matches core/confirm.py TIMEOUT_SECONDS
+AGENT_TEXT_MAX       = 2000   # max chars for /api/agent input
+CMD_RATE_MAX         = 120    # non-move /ws/cmd + /api/command msgs per 60 s / token
+CMD_RATE_WINDOW      = 60.0
+PAD_MOVE_RATE_MAX    = 40     # touchpad_move msgs per second / token (rest dropped)
+
+# D-pad allowlist: pyautogui key names the phone may send. No modifiers,
+# no function keys beyond F11, no arbitrary strings — ever.
+DPAD_KEYS = ("up", "down", "left", "right", "enter", "space",
+             "esc", "tab", "f11")
+
+# Volume actions the phone may request (maps to agent tools_system tools).
+VOLUME_ACTIONS = ("up", "down", "mute", "unmute", "set")
+
+# Quick commands: 8 defaults, user-extensible via config/dashboard.json.
+# Each runs through the agent (natural language) so permission gating
+# applies exactly as if the user had typed the prompt.
+DEFAULT_QUICK_COMMANDS = [
+    {"id": "youtube",       "label": "YouTube",       "icon": "\U0001F3AC",
+     "prompt": "Open YouTube in the browser"},
+    {"id": "chrome",        "label": "Chrome",        "icon": "\U0001F310",
+     "prompt": "Open Google Chrome"},
+    {"id": "explorer",      "label": "Files",         "icon": "\U0001F4C1",
+     "prompt": "Open the file manager"},
+    {"id": "datetime",      "label": "Date & Time",   "icon": "\U0001F550",
+     "prompt": "What is the current date and time?"},
+    {"id": "weather",       "label": "Weather",       "icon": "\U0001F324\U0000FE0F",
+     "prompt": "What is the weather like right now?"},
+    {"id": "screen",        "label": "Screen Summary","icon": "\U0001F5A5\U0000FE0F",
+     "prompt": "Summarize what is currently on my screen"},
+    {"id": "joke",          "label": "Joke",          "icon": "\U0001F604",
+     "prompt": "Tell me a short joke"},
+    {"id": "notifications", "label": "Notifications", "icon": "\U0001F514",
+     "prompt": "Check my recent notifications and summarize them"},
+]
 
 
 def _make_uploads_dir() -> Path:
@@ -99,6 +154,18 @@ def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
     padded   = dec.update(ct) + dec.finalize()
     unpadder = sym_pad.PKCS7(128).unpadder()
     return (unpadder.update(padded) + unpadder.finalize()).decode('utf-8')
+
+
+def _summarise_args(args: dict) -> str:
+    """One-line, redacted summary of tool args for the phone confirm card.
+    Values are truncated and never logged raw (no secrets in the UI)."""
+    parts = []
+    for k, v in (args or {}).items():
+        s = str(v)
+        if len(s) > 60:
+            s = s[:60] + "\u2026"
+        parts.append(f"{k}={s}")
+    return ", ".join(parts) if parts else "(no arguments)"
 
 
 # ── CryptoJS (auto-download once, served locally) ─────────────────────────────
@@ -509,6 +576,20 @@ class DashboardServer:
         self._login_html                  = _read("login.html")
         self._app_html                    = _read("app.html")
         self.app                          = self._build_app()
+        # ── Phase 7: mobile dashboard state ─────────────────────────────
+        self._agent             = None   # set_agent() by main.py
+        self._agent_lock        = threading.Lock()  # serialises dashboard agent calls
+        self._device_manager    = None   # Phase-5 DeviceManager (optional)
+        self._backend_status_fn = None   # () -> {"live": bool} (optional)
+        self._telemetry         = None   # lazy core.telemetry.TelemetrySampler
+        self._loop              = None   # uvicorn loop, captured in serve()
+        self._pending_confirms: dict = {}  # cid -> {event, approved, tool, args, why}
+        self._pending_agent_runs: dict = {}  # rid -> parked gated step
+        self._cmd_hits: dict = {}   # token -> [timestamps] (command rate limit)
+        self._pad_hits: dict = {}   # token -> [timestamps] (touchpad rate limit)
+        self._cmd_clients: set = set()  # /ws/cmd sockets (for targeted msgs)
+        self._cursor = {"x": 960, "y": 540}  # touchpad cursor estimate
+        self._quick_path = BASE_DIR / "config" / "dashboard.json"
 
     # ── PIN rate limiting (Phase 2) ─────────────────────────────────────────
 
@@ -552,6 +633,227 @@ class DashboardServer:
         self._pin_attempts.pop(ip, None)
 
     # ── one-time key management ───────────────────────────────────────────
+    # ── Phase 7: wiring (called by main.py) ───────────────────────────────
+
+    def set_agent(self, agent) -> None:
+        """Attach the Phase-6 agent engine. /api/agent and /ws/cmd route
+        through it with per-call confirm hooks — the agent's own configured
+        hook (used by the Live loop) is never mutated."""
+        self._agent = agent
+
+    def set_device_manager(self, mgr) -> None:
+        self._device_manager = mgr
+
+    def set_backend_status_fn(self, fn) -> None:
+        """fn() -> dict, e.g. {"live": bool(session), "awake": bool}. Used by
+        /api/session so the phone can show an honest backend state."""
+        self._backend_status_fn = fn
+
+    # ── Phase 7: origin validation (CSRF) ─────────────────────────────────
+
+    def _origin_ok(self, headers) -> bool:
+        """Same-host origins and non-browser clients pass. A cross-site page
+        cannot hold a bearer token (no cookies are used), so this is
+        belt-and-braces on top of token auth — mainly for the websocket
+        handshake and the pre-auth /login endpoint."""
+        origin = ""
+        try:
+            origin = (headers.get("origin") or "").strip()
+        except Exception:
+            pass
+        if not origin:
+            return True
+        try:
+            o_host = (urllib.parse.urlparse(origin).hostname or "").lower()
+            h_host = (headers.get("host") or "").split(":")[0].lower()
+        except Exception:
+            return False
+        return o_host in (h_host, self._ip.lower(), "localhost", "127.0.0.1")
+
+    # ── Phase 7: command rate limiting ────────────────────────────────────
+
+    def _rate_ok(self, token: str, kind: str) -> bool:
+        """Sliding-window limiter. kind 'cmd' = 120/60s, 'move' = 40/s."""
+        now = time.time()
+        if kind == "move":
+            store, limit, window = self._pad_hits, PAD_MOVE_RATE_MAX, 1.0
+        else:
+            store, limit, window = self._cmd_hits, CMD_RATE_MAX, CMD_RATE_WINDOW
+        hits = [t for t in store.get(token, []) if now - t < window]
+        if len(hits) >= limit:
+            store[token] = hits
+            return False
+        hits.append(now)
+        store[token] = hits
+        # bound the dict
+        if len(store) > 200:
+            for k in list(store)[:100]:
+                store.pop(k, None)
+        return True
+
+    # ── Phase 7: phone confirmation flow ──────────────────────────────────
+
+    def _emit_threadsafe(self, msg: dict) -> None:
+        """Broadcast from any thread (the confirm hook runs on agent pool
+        threads, not the uvicorn loop)."""
+        try:
+            loop = self._loop
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.broadcast(msg), loop)
+        except Exception:
+            pass
+
+    def _phone_confirm_hook(self, tool: str, args: dict, reason: str) -> bool:
+        return self.request_phone_confirmation(tool, args, reason)
+
+    def request_phone_confirmation(self, tool: str, args: dict, reason: str,
+                                   timeout_s: float = CONFIRM_TIMEOUT_SECS) -> bool:
+        """Ask every connected phone to Approve/Deny a gated agent step.
+        Blocks the calling (agent pool) thread until the phone answers or
+        the timeout elapses. Returns False when nobody can be asked."""
+        if not self._clients and not self._cmd_clients:
+            return False
+        cid = secrets.token_urlsafe(8)
+        ev = threading.Event()
+        self._pending_confirms[cid] = {
+            "event": ev, "approved": None, "tool": tool,
+            "args": dict(args or {}), "why": reason,
+            "expires": time.time() + timeout_s,
+        }
+        self._emit_threadsafe({
+            "type": "confirm_request", "id": cid, "tool": tool,
+            "args": _summarise_args(dict(args or {})),
+            "why": reason, "timeout_s": timeout_s,
+        })
+        answered = ev.wait(timeout_s)
+        rec = self._pending_confirms.pop(cid, None)
+        return bool(answered and rec and rec.get("approved") is True)
+
+    def _resolve_confirm(self, cid: str, approved: bool) -> bool:
+        rec = self._pending_confirms.get(cid)
+        if not rec:
+            return False
+        rec["approved"] = bool(approved)
+        rec["event"].set()
+        return True
+
+    # ── Phase 7: agent helpers ────────────────────────────────────────────
+
+    def _agent_call(self, fn, *a, **k):
+        """Run an agent call on a worker thread, serialised with the
+        dashboard agent lock (two phones must not interleave confirm flows).
+        The uvicorn loop thread never blocks: the lock is taken inside the
+        worker."""
+        def _do():
+            with self._agent_lock:
+                return fn(*a, **k)
+        return _do
+
+    async def _run_agent_text(self, text: str):
+        agent = self._agent
+        if agent is None:
+            return None
+        return await asyncio.to_thread(
+            self._agent_call(agent.run_sync, text,
+                             confirm_hook=self._phone_confirm_hook))
+
+    async def _run_remote_tool(self, name: str, args: dict) -> dict:
+        """Execute ONE allowlisted tool for the authenticated command channel.
+        The permission engine validates every call: unknown tools fail closed,
+        PRIVILEGED is denied. The phone tap on a PIN-paired device counts as
+        the human approval for USER_CONFIRMATION-level remote-control tools —
+        see the module security-model note."""
+        from core import permissions
+        from core.permissions import Level
+        agent = self._agent
+        if agent is None:
+            return {"ok": False,
+                    "error": "Agent engine unavailable on this desktop."}
+        gate = permissions.check(name, args)
+        if not gate.allowed:
+            return {"ok": False, "error": f"Denied: {gate.reason}"}
+        if gate.level is Level.PRIVILEGED:
+            return {"ok": False, "error": "Denied: privileged tool."}
+        try:
+            out = await asyncio.to_thread(
+                self._agent_call(agent.execute_tool, name, args,
+                                 confirm_hook=lambda *a: True))
+            return {"ok": True, "result": str(out)[:500]}
+        except Exception as e:
+            return {"ok": False, "error": f"Tool failed: {e}"}
+
+    # ── Phase 7: touchpad cursor estimate ─────────────────────────────────
+
+    def _screen_size(self) -> tuple:
+        if _pag is not None:
+            try:
+                s = _pag.size()
+                return (int(s[0]), int(s[1]))
+            except Exception:
+                pass
+        return (1920, 1080)
+
+    def _resync_cursor(self) -> bool:
+        """Snap the estimate to the real pointer when pyautogui can read it."""
+        if _pag is None:
+            return False
+        try:
+            x, y = _pag.position()
+            self._cursor = {"x": int(x), "y": int(y)}
+            return True
+        except Exception:
+            return False
+
+    # ── Phase 7: quick commands config ────────────────────────────────────
+
+    def _quick_commands(self) -> list:
+        cmds = [dict(c) for c in DEFAULT_QUICK_COMMANDS]
+        try:
+            data = json.loads(self._quick_path.read_text(encoding="utf-8"))
+            user = data.get("quick_commands") if isinstance(data, dict) else None
+            if isinstance(user, list):
+                by_id = {c["id"]: c for c in cmds}
+                for u in user:
+                    if (isinstance(u, dict) and isinstance(u.get("id"), str)
+                            and isinstance(u.get("prompt"), str)):
+                        entry = {"id": u["id"][:32],
+                                 "label": str(u.get("label") or u["id"])[:32],
+                                 "icon": str(u.get("icon") or "\u2753")[:8],
+                                 "prompt": u["prompt"][:500]}
+                        by_id[entry["id"]] = entry
+                cmds = [by_id[c["id"]] for c in cmds if c["id"] in by_id]
+                cmds += [v for k, v in by_id.items()
+                         if k not in {c["id"] for c in DEFAULT_QUICK_COMMANDS}]
+        except Exception:
+            pass
+        return cmds
+
+    def _save_quick_commands(self, commands: list) -> None:
+        clean = []
+        for u in commands:
+            if not (isinstance(u, dict) and isinstance(u.get("id"), str)
+                    and isinstance(u.get("prompt"), str)):
+                continue
+            if not re.fullmatch(r"[a-z0-9_\-]{1,32}", u["id"]):
+                continue
+            clean.append({"id": u["id"],
+                          "label": str(u.get("label") or u["id"])[:32],
+                          "icon": str(u.get("icon") or "\u2753")[:8],
+                          "prompt": u["prompt"][:500]})
+        self._quick_path.parent.mkdir(parents=True, exist_ok=True)
+        self._quick_path.write_text(
+            json.dumps({"quick_commands": clean}, indent=2,
+                       ensure_ascii=False), encoding="utf-8")
+
+    def _backend_status(self) -> dict:
+        if self._backend_status_fn is None:
+            return {"live": None, "note": "desktop did not report status"}
+        try:
+            st = self._backend_status_fn() or {}
+            return {"live": st.get("live"), "awake": st.get("awake")}
+        except Exception:
+            return {"live": None, "note": "status probe failed"}
+
 
     def new_key(self, expiry_secs: int = 600) -> str:
         now = time.time()
@@ -599,6 +901,13 @@ class DashboardServer:
     # ── broadcast ────────────────────────────────────────────────────────
 
     async def broadcast(self, msg: dict) -> None:
+        # Refresh the loop handle on every broadcast: the confirm hook emits
+        # from agent pool threads via run_coroutine_threadsafe, and this keeps
+        # the handle valid even if the server object outlives a loop restart.
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         self._history.append(msg)
         if len(self._history) > 300:
             self._history = self._history[-300:]
@@ -734,9 +1043,17 @@ class DashboardServer:
                 body = await req.json()
             except Exception:
                 return JSONResponse({"ok": False}, status_code=400)
+            ip = self._client_ip(req)
+            locked = self._pin_lock_remaining(ip)
+            if locked > 0:
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"Too many attempts. Try again in {int(locked)}s."},
+                    status_code=429)
             dev_tok = (body.get("device_token") or "").strip()
             if not dev_tok or dev_tok not in self._device_sessions:
                 return JSONResponse({"ok": False}, status_code=401)
+                self._pin_failed(ip)
             session_key = self._device_sessions[dev_tok]["session_key"]
             tok = secrets.token_urlsafe(32)
             self._tokens.add(tok)
@@ -765,12 +1082,19 @@ class DashboardServer:
             body  = await req.json()
             token = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             enc   = body.get("enc", "")
+            if not self._rate_ok(token, "cmd"):
+                return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
             if enc:
                 text = self._decrypt(token, enc)
-                if text is None:
+                if not isinstance(text, str):
                     return JSONResponse({"error": "Decryption failed"}, status_code=400)
             else:
-                text = (body.get("text") or "").strip()
+                # Legacy plaintext path: kept for old clients; the phone PWA
+                # sends AES-256-CBC "enc" payloads. Strictly validated.
+                text = body.get("text")
+                text = text.strip() if isinstance(text, str) else ""
+            if len(text) > 1000:
+                return JSONResponse({"error": "Command too long"}, status_code=400)
             if text:
                 await self._command_queue.put(text)
                 if self._wake_callback:
@@ -791,6 +1115,9 @@ class DashboardServer:
         async def phone_audio_ws(websocket: WebSocket, token: str = ""):
             tok = token.strip()
             if not tok or tok not in self._tokens:
+                await websocket.close(code=4001)
+                return
+            if not self._origin_ok(websocket.headers):
                 await websocket.close(code=4001)
                 return
             await websocket.accept()
@@ -907,6 +1234,9 @@ class DashboardServer:
             if not tok or tok not in self._tokens:
                 await websocket.close(code=4001)
                 return
+            if not self._origin_ok(websocket.headers):
+                await websocket.close(code=4001)
+                return
             await websocket.accept()
             self._clients.add(websocket)
             for entry in self._history[-50:]:
@@ -919,8 +1249,13 @@ class DashboardServer:
                     data = await websocket.receive_json()
                     if data.get("type") == "command":
                         enc = data.get("enc", "")
-                        t   = self._decrypt(tok, enc) if enc else (data.get("text") or "").strip()
-                        if t:
+                        if enc:
+                            t = self._decrypt(tok, enc)
+                            t = t if isinstance(t, str) else None
+                        else:
+                            t = data.get("text")
+                            t = t.strip() if isinstance(t, str) else None
+                        if t and len(t) <= 1000:
                             await self._command_queue.put(t)
                             if self._wake_callback:
                                 self._wake_callback()
@@ -929,7 +1264,464 @@ class DashboardServer:
             finally:
                 self._clients.discard(websocket)
 
+        # ── Phase 7: PWA + i18n static assets ────────────────────────────
+        @app.get("/manifest.webmanifest")
+        async def pwa_manifest():
+            return FileResponse(str(STATIC_DIR / "manifest.webmanifest"),
+                                media_type="application/manifest+json")
+
+        @app.get("/sw.js")
+        async def pwa_sw():
+            return FileResponse(str(STATIC_DIR / "sw.js"),
+                                media_type="application/javascript")
+
+        @app.get("/icons/{name}")
+        async def pwa_icon(name: str):
+            safe = re.sub(r"[^a-z0-9_.-]", "", name)
+            path = STATIC_DIR / "icons" / safe
+            if not path.exists() or not path.is_file():
+                return JSONResponse({"error": "Not found"}, status_code=404)
+            return FileResponse(str(path), media_type="image/png")
+
+        @app.get("/i18n/{lang}.json")
+        async def dashboard_i18n(lang: str):
+            if lang not in ("en", "ur", "ar", "ur-Latn"):
+                return JSONResponse({"error": "Unknown language"},
+                                    status_code=404)
+            path = STATIC_DIR / "i18n" / f"{lang}.json"
+            if not path.exists():
+                return JSONResponse({"error": "Not found"}, status_code=404)
+            return FileResponse(str(path), media_type="application/json")
+
+        # ═════════ Phase 7: mobile dashboard routes ═════════
+
+        @app.post("/api/agent")
+        async def agent_route(req: Request):
+            """Natural language → agent engine. Gated steps surface as
+            Approve/Deny on the phone via the confirm flow; a timed-out
+            gate is parked and returned as `pending` for late approval."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+            text = str((body or {}).get("text", "")).strip()
+            if not text:
+                return JSONResponse({"error": "Field 'text' is required"},
+                                    status_code=400)
+            if len(text) > AGENT_TEXT_MAX:
+                return JSONResponse(
+                    {"error": f"Text too long (max {AGENT_TEXT_MAX} chars)"},
+                    status_code=400)
+            if self._agent is None:
+                return JSONResponse(
+                    {"error": "Agent engine is not available on this desktop. "
+                              "Start SHIRAZI with the agent enabled."},
+                    status_code=503)
+            try:
+                result = await self._run_agent_text(text)
+            except Exception as e:
+                return JSONResponse({"error": f"Agent run failed: {e}"},
+                                    status_code=500)
+            status = result.status.value
+            resp = {"ok": True, "status": status, "answer": result.answer,
+                    "steps_executed": result.steps_executed, "ms": result.ms,
+                    "pending": None}
+            if status == "cancelled" and result.pending:
+                # Gate timed out with no answer: park it so the phone can
+                # approve late via /api/agent/confirm.
+                rid = secrets.token_urlsafe(8)
+                self._pending_agent_runs[rid] = dict(result.pending)
+                resp["pending"] = {"id": rid, "tool": result.pending.get("tool"),
+                                   "args": result.pending.get("args"),
+                                   "why": result.pending.get("why")}
+            elif status == "pending_confirmation" and result.pending:
+                rid = secrets.token_urlsafe(8)
+                self._pending_agent_runs[rid] = dict(result.pending)
+                resp["pending"] = {"id": rid, "tool": result.pending.get("tool"),
+                                   "args": result.pending.get("args"),
+                                   "why": result.pending.get("why")}
+            return JSONResponse(resp)
+
+        @app.post("/api/agent/confirm")
+        async def agent_confirm_route(req: Request):
+            """Resolve a parked gated step: {id, approved}. Runs ONLY the
+            single parked tool with the phone's decision — never a new plan."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+            rid = str((body or {}).get("id", ""))
+            approved = bool((body or {}).get("approved"))
+            parked = self._pending_agent_runs.pop(rid, None)
+            if not parked:
+                return JSONResponse(
+                    {"error": "Unknown or expired confirmation id"},
+                    status_code=404)
+            if self._agent is None:
+                return JSONResponse(
+                    {"error": "Agent engine is not available"}, status_code=503)
+            agent = self._agent
+            try:
+                out = await asyncio.to_thread(
+                    self._agent_call(agent.execute_tool, parked["tool"],
+                                     dict(parked.get("args") or {}),
+                                     confirm_hook=lambda *a: approved))
+            except Exception as e:
+                return JSONResponse({"error": f"Tool failed: {e}"},
+                                    status_code=500)
+            return JSONResponse({"ok": True, "approved": approved,
+                                 "tool": parked["tool"], "result": str(out)[:2000]})
+
+        @app.get("/api/session")
+        async def session_route(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return JSONResponse({
+                "ok": True,
+                "agent_available": self._agent is not None,
+                "device_manager": self._device_manager is not None,
+                "pending_confirms": len(self._pending_confirms),
+                "pending_agent_runs": len(self._pending_agent_runs),
+                "backend": self._backend_status(),
+            })
+
+        @app.get("/api/telemetry")
+        async def telemetry_route(req: Request):
+            """Throttled system telemetry. The sampler caches for 2 s, so a
+            fast phone poller can never turn into a fast psutil loop."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                from core.telemetry import TelemetrySampler
+            except Exception as e:
+                return JSONResponse({"error": f"telemetry unavailable: {e}"},
+                                    status_code=503)
+            if self._telemetry is None:
+                self._telemetry = TelemetrySampler(min_interval=2.0)
+            try:
+                sample = await asyncio.to_thread(self._telemetry.snapshot)
+            except Exception as e:
+                return JSONResponse({"error": f"telemetry probe failed: {e}"},
+                                    status_code=500)
+            rows = [{"label": label, "value": value, "display": display}
+                    for label, value, display in sample.as_rows()]
+            return JSONResponse({"ok": True, "rows": rows})
+
+        @app.get("/api/audio-devices")
+        async def audio_devices_route(req: Request, rescan: bool = False):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                from core import audio_devices as ad
+            except Exception as e:
+                return JSONResponse({"available": False,
+                                     "error": f"audio stack unavailable: {e}"})
+            def _do():
+                if rescan:
+                    ad.rescan()
+                ins = ad.list_devices("input")
+                outs = ad.list_devices("output")
+                sel_in = sel_out = ""
+                if self._device_manager is not None:
+                    try:
+                        sel_in = self._device_manager.selected_input() or ""
+                        sel_out = self._device_manager.selected_output() or ""
+                    except Exception:
+                        pass
+                state = {}
+                try:
+                    state["input"] = ad.status_line(sel_in, "input")
+                except Exception as e:
+                    state["input"] = f"unavailable: {e}"
+                try:
+                    state["output"] = ad.status_line(sel_out, "output")
+                except Exception as e:
+                    state["output"] = f"unavailable: {e}"
+                return {"available": True, "input": ins, "output": outs,
+                        "selected": {"input": sel_in, "output": sel_out},
+                        "state": state}
+            try:
+                return JSONResponse(await asyncio.to_thread(_do))
+            except Exception as e:
+                return JSONResponse({"available": False,
+                                     "error": f"device query failed: {e}"})
+
+        @app.post("/api/audio-devices")
+        async def audio_devices_select(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+            kind = str((body or {}).get("kind", "")).strip()
+            name = str((body or {}).get("name", ""))
+            if kind not in ("input", "output"):
+                return JSONResponse({"error": "kind must be 'input' or 'output'"},
+                                    status_code=400)
+            if self._device_manager is None:
+                return JSONResponse(
+                    {"error": "Device manager is not available on this desktop"},
+                    status_code=503)
+            try:
+                from core import audio_devices as ad
+                valid = ad.list_devices(kind)
+            except Exception as e:
+                return JSONResponse({"error": f"audio stack unavailable: {e}"},
+                                    status_code=503)
+            if name and name not in valid:
+                return JSONResponse({"error": "Unknown device name"},
+                                    status_code=400)
+            try:
+                ok = (self._device_manager.select_input(name) if kind == "input"
+                      else self._device_manager.select_output(name))
+            except Exception as e:
+                return JSONResponse({"error": f"selection failed: {e}"},
+                                    status_code=500)
+            return JSONResponse({"ok": bool(ok), "kind": kind, "name": name})
+
+        @app.post("/api/audio-devices/rescan")
+        async def audio_devices_rescan(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                from core import audio_devices as ad
+                fresh = await asyncio.to_thread(ad.rescan)
+                return JSONResponse({"ok": True, **fresh})
+            except Exception as e:
+                return JSONResponse({"error": f"rescan failed: {e}"},
+                                    status_code=503)
+
+        @app.post("/api/audio-devices/test")
+        async def audio_devices_test(req: Request):
+            """Play the synthetic test chime on the selected output device."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                from core import audio_devices as ad
+            except Exception as e:
+                return JSONResponse({"error": f"audio stack unavailable: {e}"},
+                                    status_code=503)
+            sel = ""
+            if self._device_manager is not None:
+                try:
+                    sel = self._device_manager.selected_output() or ""
+                except Exception:
+                    pass
+            msg = await asyncio.to_thread(ad.play_test_chime, sel)
+            ok = msg.startswith("Test chime played")
+            return JSONResponse({"ok": ok, "message": msg})
+
+        @app.get("/api/quick-commands")
+        async def quick_commands_list(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            return JSONResponse({"ok": True,
+                                 "commands": self._quick_commands()})
+
+        @app.post("/api/quick-commands")
+        async def quick_commands_save(req: Request):
+            """Replace the user quick-command set (validated, then persisted
+            to config/dashboard.json). Defaults are never deleted — a saved
+            entry with the same id overrides its default."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+            commands = (body or {}).get("commands")
+            if not isinstance(commands, list) or len(commands) > 64:
+                return JSONResponse(
+                    {"error": "commands must be a list (max 64)"},
+                    status_code=400)
+            try:
+                self._save_quick_commands(commands)
+            except Exception as e:
+                return JSONResponse({"error": f"save failed: {e}"},
+                                    status_code=500)
+            return JSONResponse({"ok": True,
+                                 "commands": self._quick_commands()})
+
+        @app.post("/api/quick-commands/run")
+        async def quick_commands_run(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+            qid = str((body or {}).get("id", ""))
+            cmd = next((c for c in self._quick_commands() if c["id"] == qid),
+                       None)
+            if cmd is None:
+                return JSONResponse({"error": "Unknown quick command"},
+                                    status_code=404)
+            if self._agent is None:
+                return JSONResponse(
+                    {"error": "Agent engine is not available"}, status_code=503)
+            try:
+                result = await self._run_agent_text(cmd["prompt"])
+            except Exception as e:
+                return JSONResponse({"error": f"Agent run failed: {e}"},
+                                    status_code=500)
+            return JSONResponse({"ok": True, "id": qid,
+                                 "status": result.status.value,
+                                 "answer": result.answer})
+
+        @app.websocket("/ws/cmd")
+        async def cmd_ws(websocket: WebSocket, token: str = ""):
+            """Authenticated command channel: D-pad, touchpad, volume,
+            quick commands, and confirm responses. Every payload is
+            allowlisted and validated — see _handle_cmd."""
+            tok = token.strip()
+            if not tok or tok not in self._tokens:
+                await websocket.close(code=4001)
+                return
+            if not self._origin_ok(websocket.headers):
+                await websocket.close(code=4003)
+                return
+            await websocket.accept()
+            self._cmd_clients.add(websocket)
+            await websocket.send_json({"type": "hello", "server": "shirazi",
+                                       "v": 7})
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    if not isinstance(data, dict):
+                        continue
+                    await self._handle_cmd(tok, websocket, data)
+            except WebSocketDisconnect:
+                pass
+            finally:
+                self._cmd_clients.discard(websocket)
+
+
         return app
+    # ── serve ─────────────────────────────────────────────────────────────
+    # ── Phase 7: /ws/cmd message handling ───────────────────────────────
+
+    async def _handle_cmd(self, tok: str, ws: WebSocket, data: dict) -> None:
+        mtype = str(data.get("type", ""))
+
+        if mtype == "ping":
+            await ws.send_json({"type": "pong"})
+            return
+
+        if mtype == "confirm_response":
+            cid = str(data.get("id", ""))
+            approved = bool(data.get("approved"))
+            ok = self._resolve_confirm(cid, approved)
+            await ws.send_json({"type": "confirm_ack", "id": cid, "ok": ok})
+            return
+
+        # Touchpad moves are high-frequency: their own 40/s budget.
+        if mtype == "touchpad_move":
+            if not self._rate_ok(tok, "move"):
+                return  # drop rather than queue — the next move supersedes
+            await self._cmd_touchpad_move(ws, data)
+            return
+
+        if not self._rate_ok(tok, "cmd"):
+            await ws.send_json({"type": "error",
+                                "error": "Rate limit exceeded — slow down."})
+            return
+
+        if mtype == "touchpad_start":
+            synced = self._resync_cursor()
+            await ws.send_json({"type": "touchpad", "synced": synced,
+                                "x": self._cursor["x"], "y": self._cursor["y"]})
+        elif mtype == "touchpad_click":
+            button = str(data.get("button", "left")).lower()
+            if button not in ("left", "right"):
+                await ws.send_json({"type": "error",
+                                    "error": "button must be left|right"})
+                return
+            r = await self._run_remote_tool("mouse_click", {"button": button})
+            await ws.send_json({"type": "click", "button": button, **r})
+        elif mtype == "dpad":
+            key = str(data.get("key", "")).lower()
+            if key not in DPAD_KEYS:
+                await ws.send_json({"type": "error",
+                                    "error": f"unknown key: {key!r}"})
+                return
+            r = await self._run_remote_tool("keyboard_press", {"key": key})
+            await ws.send_json({"type": "key", "key": key, **r})
+        elif mtype == "scroll":
+            direction = str(data.get("direction", "down")).lower()
+            if direction not in ("up", "down", "left", "right"):
+                await ws.send_json({"type": "error",
+                                    "error": "direction must be up|down|left|right"})
+                return
+            try:
+                amount = max(1, min(int(data.get("amount", 3) or 3), 20))
+            except Exception:
+                amount = 3
+            r = await self._run_remote_tool(
+                "scroll", {"direction": direction, "amount": amount})
+            await ws.send_json({"type": "scroll", "direction": direction, **r})
+        elif mtype == "volume":
+            action = str(data.get("action", "")).lower()
+            if action not in VOLUME_ACTIONS:
+                await ws.send_json({"type": "error",
+                                    "error": f"unknown volume action: {action!r}"})
+                return
+            tool = {"up": "volume_up", "down": "volume_down",
+                    "mute": "volume_mute", "unmute": "volume_unmute",
+                    "set": "volume_set"}[action]
+            args = {}
+            if action == "set":
+                try:
+                    args["level"] = max(0, min(int(data.get("level", 50)), 100))
+                except Exception:
+                    args["level"] = 50
+            r = await self._run_remote_tool(tool, args)
+            await ws.send_json({"type": "volume", "action": action, **r})
+        elif mtype == "quick":
+            qid = str(data.get("id", ""))
+            cmd = next((c for c in self._quick_commands() if c["id"] == qid),
+                       None)
+            if cmd is None:
+                await ws.send_json({"type": "error",
+                                    "error": "unknown quick command"})
+                return
+            if self._agent is None:
+                await ws.send_json({"type": "error",
+                                    "error": "agent unavailable"})
+                return
+            try:
+                result = await self._run_agent_text(cmd["prompt"])
+                await ws.send_json({"type": "quick", "id": qid,
+                                    "status": result.status.value,
+                                    "answer": result.answer})
+            except Exception as e:
+                await ws.send_json({"type": "error",
+                                    "error": f"agent failed: {e}"})
+        else:
+            await ws.send_json({"type": "error",
+                                "error": f"unknown message type: {mtype!r}"})
+
+    async def _cmd_touchpad_move(self, ws: WebSocket, data: dict) -> None:
+        try:
+            dx = float(data.get("dx", 0) or 0)
+            dy = float(data.get("dy", 0) or 0)
+            sens = float(data.get("sensitivity", 1.0) or 1.0)
+        except Exception:
+            return
+        # Clamp: a single message may not fling the pointer across the planet.
+        dx = max(-400, min(400, dx * max(0.1, min(5.0, sens))))
+        dy = max(-400, min(400, dy * max(0.1, min(5.0, sens))))
+        sw, sh = self._screen_size()
+        self._cursor["x"] = int(max(0, min(sw - 1, self._cursor["x"] + dx)))
+        self._cursor["y"] = int(max(0, min(sh - 1, self._cursor["y"] + dy)))
+        r = await self._run_remote_tool(
+            "mouse_move", {"x": self._cursor["x"], "y": self._cursor["y"]})
+        if not r.get("ok"):
+            await ws.send_json({"type": "error", "error": r.get("error")})
 
     # ── serve ─────────────────────────────────────────────────────────────
 
@@ -953,6 +1745,7 @@ class DashboardServer:
             return
 
         # Firewall setup runs in a thread — uvicorn starts immediately,
+        self._loop = asyncio.get_running_loop()  # Phase 7: for threadsafe emits
         # no waiting for UAC dialogs or subprocess timeouts.
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
 

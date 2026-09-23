@@ -522,3 +522,34 @@ def rescan() -> dict:
     _probe_results = {}
     return {"input": list_devices("input", refresh=True),
             "output": list_devices("output", refresh=True)}
+
+
+def play_test_chime(device_name: str = "") -> str:
+    """Play the synthetic speaker-test chime (587 Hz + 880 Hz + 147 Hz) on the
+    named output device ("" = system default). Phase 7: shared by the desktop
+    audio panel and the mobile dashboard's speaker test.
+
+    Honest degradation: returns a human-readable message when sounddevice or
+    numpy is missing, or when the stream fails to open — never raises."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+    except ImportError as e:
+        return f"Speaker test unavailable: {e.name or e} is not installed."
+    try:
+        sr, dur = 44100, 0.9
+        n = int(sr * dur)
+        tt = np.arange(n, dtype=np.float32) / sr
+        env = np.exp(-3.0 * tt / dur) * np.minimum(1.0, tt / 0.02)
+        sig = (0.50 * np.sin(2 * np.pi * 587.33 * tt)
+               + 0.30 * np.sin(2 * np.pi * 880.00 * tt)
+               + 0.20 * np.sin(2 * np.pi * 146.83 * tt)) * env
+        pcm = (np.clip(sig, -1.0, 1.0) * 32767).astype(np.int16)
+        dev = resolve(device_name, "output")
+        with sd.OutputStream(samplerate=sr, channels=1, dtype="int16",
+                             device=dev) as st:
+            st.write(pcm)
+        label = device_name or "system default"
+        return f"Test chime played on '{label}'."
+    except Exception as e:
+        return f"Speaker test failed: {e}"

@@ -1,4 +1,4 @@
-# Security Notes — Shirazi repo (as of Phase 2, 2026-09-23)
+# Security Notes — Shirazi repo (as of Phase 7, 2026-09-23)
 
 This file documents the CURRENT secret-handling state of the codebase. It is a
 record, not a fix list — the migration work is scheduled for later phases.
@@ -31,6 +31,39 @@ and plain-HTTP default.
 3. Removed unused plugin-extra deps (`google-api-python-client`,
    `google-auth-oauthlib`, `tinytuya`, `paho-mqtt`) so fewer credential-bearing
    packages sit on the install surface.
+
+## What changed in Phase 7
+
+1. **`/ws/cmd` command channel** (new): every message type is allowlisted
+   and validated before dispatch — `dpad` keys restricted to
+   `up/down/left/right/enter/space/esc/tab/F11`, `touchpad_click` buttons to
+   `left|right`, `scroll` directions to the 4-way enum with amount clamped
+   1–20, `volume` actions to `up/down/mute/unmute/set` with level clamped
+   0–100. Tool names dispatched are hardcoded server-side; the client can
+   never name a tool. Unknown message types are rejected.
+2. **Permission engine re-check on every remote tool call**
+   (`_run_remote_tool`): unknown tools fail closed, PRIVILEGED tools are
+   denied outright. The physical tap on a PIN-paired phone counts as the
+   human approval for USER_CONFIRMATION-level remote-control tools; free
+   text through `/api/agent` keeps explicit per-step Approve/Deny.
+3. **Per-call confirm-hook isolation** (`core/agent/executor.py`): the
+   dashboard passes its phone-confirmation hook per call instead of
+   mutating the shared agent — the desktop Live loop's hook cannot be
+   hijacked from the dashboard path.
+4. **Origin checks** added to `/ws`, `/ws/phone-audio`, and `/ws/cmd`
+   (same-host origins and non-browser clients pass; token auth remains
+   the real gate).
+5. **Rate limiting:** `/api/command` + `/ws/cmd` at 120 msgs/60 s per
+   token (429 beyond); touchpad moves at 40/s (excess dropped, never
+   queued); `/api/agent` text capped at 2000 chars; legacy command text
+   capped at 1000 chars and strictly type-checked (must be a string).
+6. **Plaintext `text` fallback retained but hardened** for old clients:
+   strict type + length validation on `/api/command` and the `/ws`
+   command handler; AES-256-CBC `enc` payloads remain the preferred path.
+
+Still deferred to Phase 8 (unchanged from the plan above): replacing the
+6-char PIN flow with multi-user auth, rotating/fixing the AES salt
+derivation, dropping the plaintext fallback entirely, TLS-by-default.
 
 ## Planned (do NOT implement before the scheduled phases)
 

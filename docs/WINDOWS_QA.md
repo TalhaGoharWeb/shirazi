@@ -3,9 +3,9 @@
 Everything in this file must be checked by a human on a real Windows machine.
 The Linux sandbox has no PyQt6, no WASAPI/MME/DirectSound and no audio
 hardware, so none of the items below can be verified here — the automated
-suite (`python -m unittest discover tests`, 128 tests) covers only the
-headless logic. Do not mark an item done until you have seen it with your
-own eyes.
+suite (`python -m unittest discover -s tests`, 189 tests) covers only the
+headless logic of all phases through Phase 7. Do not mark an item done
+until you have seen it with your own eyes.
 
 ## 1. Rendering
 
@@ -116,6 +116,57 @@ human on real Windows must see the real paths:
 - [ ] Research: "research the history of the astrolabe" → a report with
       FACT / SOURCE / INFERENCE / UNCERTAINTY sections; every citation
       opens a real page that was actually retrieved.
+
+## 9. Mobile dashboard (Phase 7 — MANUAL)
+
+Setup: start SHIRAZI on the Windows desktop, open **Remote Control**, and
+pair the phone by scanning the QR code (or typing the 6-char key). The
+dashboard URL is `http(s)://<desktop-ip>:<port>/`.
+
+- [ ] Pairing: QR scan logs the phone in without typing; a wrong key 5×
+      locks the phone out for ~5 minutes ("Too many attempts"); a correct
+      key after 4 wrong ones still works (counter resets on success).
+- [ ] PWA: browser menu → "Add to Home Screen" (or the INSTALL APP
+      button) installs SHIRAZI; the installed app opens full-screen with
+      the reactor icon; airplane mode shows the cached shell with an
+      honest OFFLINE pill — no fake telemetry.
+- [ ] Voice tab — **tap**: single tap starts listening (orb glows green,
+      "🎤 Listening…", waveform ring dances with the mic level); tap again
+      stops. **Hold**: press-and-hold streams only while held; release
+      stops. Speak a command — the desktop answers in the chat feed and,
+      with the 🔊 toggle on, the phone speaks the reply.
+- [ ] Voice tab — offline: with the desktop app stopped, the pill shows
+      OFFLINE and voice/chat show "connection lost" instead of fake
+      answers.
+- [ ] Chat tab: typing "open youtube" runs the agent and shows the answer;
+      a gated request (e.g. "delete the temp file") pops the **🔒
+      confirmation modal** with tool name, reason, args and a countdown —
+      APPROVE runs it, DENY cancels it, and the inline pending card in
+      the feed does the same when the modal is missed.
+- [ ] Remote tab — touchpad: drag moves the desktop cursor (sensitivity
+      slider changes the speed); double-tap = left click; long-press
+      (~0.5 s, vibrates) = right click; two-finger drag scrolls.
+- [ ] Remote tab — D-pad: arrows/⏎ move through a desktop menu or text
+      field; SPACE/ESC/TAB/F11 work. Nothing outside the allowlist can be
+      sent (there is no free-text key field by design).
+- [ ] Remote tab — quick commands: the 8 defaults each produce a real
+      agent answer (or an honest "unavailable" when the desktop has no
+      provider keys); ＋ Add creates a custom command that survives an
+      app restart.
+- [ ] System tab: telemetry bars move (CPU/RAM/DISK/BATTERY/UPTIME/
+      NETWORK), updating every ~3 s; audio selects list the real Windows
+      mic/speakers; RESCAN picks up a newly plugged headset; TEST plays
+      the chime through the chosen speaker.
+- [ ] System tab — session: shows agent available ✓, backend live state
+      honest (LIVE / not-live / unknown); REVOKE forces the phone to
+      re-pair; LOG OUT returns to the login page.
+- [ ] Language: switching to اردو flips the whole UI to RTL Urdu; broken
+      strings fall back to English rather than showing blanks.
+- [ ] HTTPS: with the desktop's `shirazi.crt` trusted on the phone, the
+      mic works with no flags; over plain HTTP, the app shows the
+      `chrome://flags` insecure-origins steps and the mic works after
+      them. (A legacy `jarvis.crt`-paired phone keeps working — the
+      server reuses the old cert.)
 
 ## Sign-off
 

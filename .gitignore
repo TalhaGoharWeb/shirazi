@@ -49,3 +49,5 @@ desktop.ini
 logs/
 downloads/
 screenshots/
+config/dashboard.json         # the phone dashboard's user-added quick commands
+                              # (machine-local state, created at runtime)
