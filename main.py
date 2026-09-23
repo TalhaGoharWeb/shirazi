@@ -187,6 +187,18 @@ def _pcm_visemes(samples, sr: int = 24000):
         return []
 
 
+def _agent_tool_declarations() -> list:
+    """Phase 6: Live function declarations for the agent-engine tools.
+    Guarded: a broken agent package degrades to an empty list, never a
+    broken session config."""
+    try:
+        from core import agent as _agent_pkg
+        return _agent_pkg.agent_declarations()
+    except Exception as _e:
+        print(f"[SHIRAZI] agent declarations unavailable: {_e}")
+        return []
+
+
 def _describe_tools(declarations) -> str:
     """One line per capability, straight from the live tool declarations.
 
@@ -613,6 +625,22 @@ class ShiraziLive:
         except Exception as _e:
             print(f"[SHIRAZI] tool registry failed to build ({_e}) - continuing without it")
             self._tool_registry = None
+
+        # Phase 6: agent engine - intent -> plan -> gated tool execution.
+        # Built here so _execute_tool can dispatch agent tools through the
+        # same permission gate. A broken agent package never breaks boot.
+        self.agent = None
+        try:
+            from core import agent as _agent_pkg
+            if self._tool_registry is not None:
+                _agent_pkg.install_agent_tools(self._tool_registry)
+            self.agent = _agent_pkg.create_agent(tool_registry=self._tool_registry)
+            print(f"[SHIRAZI] agent engine ready "
+                  f"({len(self.agent.available_tools())} tools)")
+        except Exception as _e:
+            print(f"[SHIRAZI] agent engine unavailable: {_e}")
+            self.agent = None
+
         self.ui.get_plugins = self._plugin_registry.list_for_ui
         self.ui.get_plugin_settings = self._plugin_registry.settings_schemas  # ⚙ settings tab
         self.ui.request_say = self.plugin_say   # plugins: mid-task speech channel
@@ -987,7 +1015,8 @@ class ShiraziLive:
         # and this follows without anyone editing a prompt.
         _all_decls = (TOOL_DECLARATIONS
                       + self._action_registry.get_tool_declarations()
-                      + self._plugin_registry.get_tool_declarations())
+                      + self._plugin_registry.get_tool_declarations()
+                      + _agent_tool_declarations())
         _names = {(d.get("name") if isinstance(d, dict) else getattr(d, "name", ""))
                   for d in _all_decls}
         sys_prompt = _render_prompt(sys_prompt, {
@@ -1258,6 +1287,15 @@ class ShiraziLive:
                     _query = args.get("query") or ", ".join(args.get("items", []))
                     _label = f"{_mode.upper()} — {_query[:38]}" if _query else _mode.upper()
                     self.ui.show_content(_label, r)
+
+            elif getattr(self, "agent", None) is not None and self.agent.handles(name):
+                # Phase 6: agent-engine tools (browser_*, *_file ops, volume,
+                # mouse/keyboard, shell_run, research, vision...). The permission
+                # gate already ran above; Agent.execute_tool re-checks and parks
+                # gated calls behind the confirm banner.
+                r = await loop.run_in_executor(
+                    None, self.agent.execute_tool, name, args)
+                result = r or "Done."
 
             else:
                 if self._plugin_registry.has(name):

@@ -94,6 +94,55 @@ _DEFAULT_LEVELS: dict[str, Level] = {
     "open_app":        Level.USER_CONFIRMATION,  # launches arbitrary apps
     "screen_processor": Level.SAFE,
     "weather_report":  Level.READ_ONLY,
+    # ── Agent engine tools (Phase 6, core/agent/) — one level per operation.
+    # Reads are free; anything that mutates state, drives the desktop, or
+    # runs code is gated. Unknown tools stay USER_CONFIRMATION (fail closed).
+    "search_files":    Level.READ_ONLY,
+    "read_file":       Level.READ_ONLY,
+    "create_file":     Level.USER_CONFIRMATION,
+    "rename_file":     Level.USER_CONFIRMATION,
+    "move_file":       Level.USER_CONFIRMATION,
+    "copy_file":       Level.USER_CONFIRMATION,
+    "delete_file":     Level.USER_CONFIRMATION,
+    "open_file":       Level.USER_CONFIRMATION,  # may launch an executable
+    "summarize_file":  Level.READ_ONLY,
+    "file_organize":   Level.USER_CONFIRMATION,
+    "browser_open":    Level.USER_CONFIRMATION,
+    "browser_navigate": Level.USER_CONFIRMATION,
+    "browser_click":   Level.USER_CONFIRMATION,  # automation risk
+    "browser_type":    Level.USER_CONFIRMATION,  # automation risk
+    "browser_extract": Level.READ_ONLY,
+    "browser_search":  Level.READ_ONLY,
+    "browser_download": Level.USER_CONFIRMATION,
+    "system_stats":    Level.SAFE,
+    "processes":       Level.SAFE,
+    "battery_status":  Level.SAFE,
+    "network_status":  Level.SAFE,
+    "volume_get":      Level.SAFE,
+    "volume_up":       Level.USER_CONFIRMATION,
+    "volume_down":     Level.USER_CONFIRMATION,
+    "volume_set":      Level.USER_CONFIRMATION,
+    "volume_mute":     Level.USER_CONFIRMATION,
+    "volume_unmute":   Level.USER_CONFIRMATION,
+    "media_control":   Level.USER_CONFIRMATION,
+    "mouse_move":      Level.SAFE,               # pointer move only, no clicks
+    "mouse_click":     Level.USER_CONFIRMATION,
+    "keyboard_type":   Level.USER_CONFIRMATION,
+    "keyboard_press":  Level.USER_CONFIRMATION,
+    "keyboard_hotkey": Level.USER_CONFIRMATION,
+    "scroll":          Level.USER_CONFIRMATION,
+    "screenshot":      Level.SAFE,
+    "clipboard_read":  Level.READ_ONLY,
+    "clipboard_write": Level.USER_CONFIRMATION,
+    "window_list":     Level.SAFE,
+    "window_focus":    Level.USER_CONFIRMATION,
+    "app_open":        Level.USER_CONFIRMATION,
+    "notify":          Level.SAFE,
+    "shell_run":       Level.USER_CONFIRMATION,  # + request_shell_execution
+    "vision_describe": Level.READ_ONLY,
+    "research_topic":  Level.READ_ONLY,
+    "memory_save":     Level.SAFE,
+    "memory_recall":   Level.READ_ONLY,
 }
 
 # Actions *within* an otherwise-gated tool that are risky enough to deserve

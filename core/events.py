@@ -47,6 +47,10 @@ WELL_KNOWN: dict[str, str] = {
     # Assistant state
     "state.changed":      "UI state changed; payload {'state': str} e.g. LISTENING",
     "memory.changed":     "a memory layer changed; payload {'layer': str, 'key': str}",
+    # Agent engine (Phase 6)
+    "agent.plan":         "the agent built a plan; payload {'request': str, 'intent': str, 'steps': [str]}",
+    "agent.step":         "an agent plan step finished; payload {'n': int, 'tool': str, 'ok': bool}",
+    "agent.done":         "an agent run finished; payload {'status': str, 'steps': int}",
     # Problems
     "warning":            "non-fatal; payload {'where': str, 'message': str}",
     "error":              "fatal-ish; payload {'where': str, 'message': str}",

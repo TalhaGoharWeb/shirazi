@@ -89,6 +89,34 @@ own eyes.
 - [ ] Leave the app running 30+ minutes with telemetry open: no leak, no
       slowdown, mic test start/stop 10× without a stuck stream.
 
+## 8. Agent engine (Phase 6 — MANUAL)
+
+The sandbox has no display, no Playwright, no tesseract and no pyautogui,
+so these were verified headless-only (166 unit tests, all passing). A
+human on real Windows must see the real paths:
+
+- [ ] Voice: "Open Chrome and search for today's weather" → the model
+      calls `app_open` then `browser_search`; no silent browser driving.
+- [ ] Voice: "Find the PDF I downloaded yesterday" → `search_files` with
+      extension .pdf under Downloads; results read back.
+- [ ] Voice: "Turn the volume down" → confirm banner appears (volume_set
+      is USER_CONFIRMATION); Confirm lowers the volume, Cancel does not.
+- [ ] Voice: "Summarize what's currently on my screen" → `vision_describe`
+      captures and summarises; OCR text appears when tesseract is
+      installed, honest "unavailable" when it is not.
+- [ ] Voice: "delete the file X" → confirm banner appears; the file is
+      untouched until Confirm; Confirm moves it to the Recycle Bin.
+- [ ] Voice: "run the command …" → the shell banner shows the EXACT
+      command; nothing runs until Confirm.
+- [ ] `pip install playwright && playwright install chromium` → browser
+      tools report availability; `browser_navigate`/`browser_click` work
+      against a real page.
+- [ ] Long agent runs (multi-step plans) never freeze the HUD: the loop
+      stays on worker threads; the UI remains responsive.
+- [ ] Research: "research the history of the astrolabe" → a report with
+      FACT / SOURCE / INFERENCE / UNCERTAINTY sections; every citation
+      opens a real page that was actually retrieved.
+
 ## Sign-off
 
 | Date | Tester | Result |
