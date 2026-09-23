@@ -199,12 +199,18 @@ def register_api_v1(app, server) -> None:
             return _unauth()
         if server._sessions is None:
             return _no_accounts()
-        from core.accounts import devices as _devices
-        mine = {d["id"] for d in _devices.list_devices(
-            server._sessions, uid, include_revoked=True)}
+        # list_devices (manager-level) carries the server-side channel key;
+        # the public facade strips it — never let it reach a response.
+        recs = server._sessions.list_devices(uid, include_revoked=True)
+        mine = {d.id for d in recs}
         if device_id not in mine and _admin(server, uid) is None:
             return JSONResponse({"error": "unknown device"}, status_code=404)
+        # Phase 9: revoke must cascade to in-memory bearers minted from this
+        # device via /api/device-login (they bypass the session records).
+        doomed_keys = [d.session_key for d in recs if d.id == device_id]
         ok = server._sessions.revoke_device(device_id)
+        if hasattr(server, "_purge_device_bearers"):
+            server._purge_device_bearers(doomed_keys)
         return JSONResponse({"ok": bool(ok)})
 
     # ── usage ──────────────────────────────────────────────────────────

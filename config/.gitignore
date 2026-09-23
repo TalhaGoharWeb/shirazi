@@ -9,5 +9,7 @@ token*.json
 client_secret*.json
 .env
 .env.*
-shirazi_memory.db   # Phase 4 layered memory store (personal data)
-*.db                # any other local sqlite stores
+# Phase 4 layered memory store (personal data)
+shirazi_memory.db
+# any other local sqlite stores
+*.db

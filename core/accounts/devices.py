@@ -19,6 +19,7 @@ here does not disturb the legacy fallback — keep both paths working.
 
 from __future__ import annotations
 
+import secrets
 from typing import Optional
 
 from .models import DeviceInfo
@@ -39,6 +40,14 @@ def register(manager: SessionManager, user_id: str, *, name: str = "",
     The raw device token is returned ONCE — it is stored hashed and can
     never be recovered. Hand it to the device being paired."""
     kind = _check_kind(kind)
+    if not session_key:
+        # Phase 9 hardening: /api/device-login exchanges a device token for
+        # a bearer only when the device record carries a non-empty channel
+        # key. The QR flow passes its pairing key explicitly; api_v1 callers
+        # don't — mint one here so the documented "register, then pair"
+        # flow actually works (the raw device token stays the credential;
+        # this key only seeds the phone<->desktop AES channel).
+        session_key = secrets.token_urlsafe(32)
     token = manager.register_device(str(user_id), name=name or kind,
                                     kind=kind, session_key=session_key)
     dev = manager.find_device(token)

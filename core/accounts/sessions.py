@@ -270,6 +270,7 @@ class SessionManager:
         return [DeviceInfo(id=r["id"], user_id=r["user_id"], name=r["name"],
                            kind=r["kind"], created_at=r["created_at"],
                            last_seen=r["last_seen"],
+                           session_key=r["session_key"] or "",
                            revoked=bool(r["revoked"])) for r in rows]
 
     def revoke_device(self, device_id_or_token: str) -> bool:
@@ -295,5 +296,11 @@ class SessionManager:
         with self._lock, self._store._connect() as conn:
             cur = conn.execute(
                 "UPDATE devices SET revoked=1 WHERE user_id=?",
+                (str(user_id),))
+            # Phase 9: cascade like revoke_device — Bearer <redacted> minted
+            # from these devices must die with them.
+            conn.execute(
+                "UPDATE sessions SET revoked=1 WHERE device_id IN"
+                " (SELECT id FROM devices WHERE user_id=?)",
                 (str(user_id),))
             return cur.rowcount

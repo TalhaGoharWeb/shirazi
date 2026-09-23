@@ -804,7 +804,7 @@ def _update_epic_games(epic_exe: Path, game_name: str = None) -> str:
             return f"Epic launch failed: {e}"
 
 # Legacy Mark-LIV scheduled-task ids — removed whenever we (re)schedule
-# or cancel, so an upgrade never leaves a stale JARVIS task behind.
+# or cancel, so an upgrade never leaves a stale legacy (JARVIS-era) task behind.
 _LEGACY_TASK_WIN = "JARVIS_GameUpdater"
 _LEGACY_PLIST_MAC = "com.jarvis.gameupdater.plist"
 _LEGACY_MARKER_CRON = "# JARVIS_GameUpdater"

@@ -1,4 +1,5 @@
 import time
+import os
 import subprocess
 import platform
 import shutil
@@ -75,15 +76,16 @@ def _normalize(raw: str) -> str:
         if alias_key in key or key in alias_key:
             return os_map.get(_SYSTEM, raw)
 
-    return raw  
+    return raw
 
 def _launch_windows(app_name: str) -> bool:
 
     if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
         try:
+            # Phase 9 hardening: argv form, no shell -- an app name is never
+            # parsed as shell metacharacters (tool stays gated regardless).
             subprocess.Popen(
-                app_name,
-                shell=True,
+                [app_name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -94,7 +96,12 @@ def _launch_windows(app_name: str) -> bool:
 
     if ":" in app_name:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            # Phase 9 hardening: ShellExecute via os.startfile parses nothing
+            # — unlike `cmd /c start`, which would still interpret command
+            # metacharacters (&, |, ...) in the app name. This branch handles
+            # URLs, protocol URIs and C:\\-style paths (tool stays gated
+            # regardless).
+            os.startfile(app_name)  # noqa: PGH121 - Windows-only by design
             time.sleep(1.0)
             return True
         except Exception:

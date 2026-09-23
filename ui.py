@@ -83,7 +83,7 @@ def _read_full_config() -> dict:
 
 # Single source of truth for the release name — the window title, the header
 # badge and the readme must never disagree again.
-APP_VERSION  = "MARK LIV"
+APP_VERSION  = "SHIRAZI"
 APP_PROTOCOL = APP_VERSION.split()[-1]
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
@@ -430,7 +430,7 @@ class _SysMetrics:
 _metrics = _SysMetrics()
 
 class HudCanvas(QWidget):
-    def __init__(self, face_path: str, assistant_name: str = "J.A.R.V.I.S", parent=None):
+    def __init__(self, face_path: str, assistant_name: str = "SHIRAZI", parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setMinimumSize(300, 300)
@@ -1540,7 +1540,7 @@ class SetupOverlay(QWidget):
             return w
 
         layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
-        layout.addWidget(_lbl("Configure J.A.R.V.I.S. before first boot.", 9, color=C.PRI_DIM))
+        layout.addWidget(_lbl("Configure SHIRAZI before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
@@ -3954,7 +3954,7 @@ class MainWindow(QMainWindow):
             sc.TargetPath       = target
             sc.Arguments        = f'"{args}"'
             sc.WorkingDirectory = work_dir
-            sc.Description      = "J.A.R.V.I.S AI Assistant"
+            sc.Description      = "SHIRAZI AI Assistant"
             sc.IconLocation     = icon_loc
             sc.save()
             return
@@ -3969,7 +3969,7 @@ class MainWindow(QMainWindow):
             f'sc.TargetPath = "{target}"',
             f'sc.Arguments = Chr(34) & "{args}" & Chr(34)',
             f'sc.WorkingDirectory = "{work_dir}"',
-            'sc.Description = "J.A.R.V.I.S AI Assistant"',
+            'sc.Description = "SHIRAZI AI Assistant"',
             f'sc.IconLocation = "{icon_loc}"',
             'sc.Save',
         ])
@@ -4095,14 +4095,14 @@ class MainWindow(QMainWindow):
             if _os == "Windows":
                 pythonw  = python.parent / "pythonw.exe"
                 target   = str(pythonw if pythonw.exists() else python)
-                lnk      = str(desktop / "J.A.R.V.I.S.lnk")
+                lnk      = str(desktop / "SHIRAZI.lnk")
                 icon_loc = str(ico_path) if ico_path.exists() else f"{target},0"
                 self._create_lnk_windows(lnk, target, str(script),
                                          str(script.parent), icon_loc)
 
             # ── macOS — proper .app bundle (no Terminal window) ───────────────
             elif _os == "Darwin":
-                app     = desktop / "J.A.R.V.I.S.app"
+                app     = desktop / "SHIRAZI.app"
                 mac_dir = app / "Contents" / "MacOS"
                 res_dir = app / "Contents" / "Resources"
                 mac_dir.mkdir(parents=True, exist_ok=True)
@@ -4128,7 +4128,7 @@ class MainWindow(QMainWindow):
                     '  <key>CFBundleExecutable</key><string>SHIRAZI</string>\n'
                     '  <key>CFBundleIdentifier</key>'
                     '<string>com.shirazi.assistant</string>\n'
-                    '  <key>CFBundleName</key><string>J.A.R.V.I.S</string>\n'
+                    '  <key>CFBundleName</key><string>SHIRAZI</string>\n'
                     '  <key>CFBundlePackageType</key><string>APPL</string>\n'
                     '  <key>CFBundleVersion</key><string>1.0</string>\n'
                     '</dict></plist>\n'
@@ -4166,10 +4166,10 @@ class MainWindow(QMainWindow):
                         png_path = ico_path  # fallback to .ico
 
                 icon_line = f"Icon={png_path}\n" if png_path.exists() else ""
-                desk = desktop / "J.A.R.V.I.S.desktop"
+                desk = desktop / "SHIRAZI.desktop"
                 desk.write_text(
                     "[Desktop Entry]\n"
-                    "Name=J.A.R.V.I.S\n"
+                    "Name=SHIRAZI\n"
                     f"Exec={python} {script}\n"
                     f"Path={script.parent}\n"
                     "Type=Application\n"

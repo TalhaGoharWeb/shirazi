@@ -153,6 +153,14 @@ _SENSITIVE_SUBACTIONS: list[tuple[str, str, str]] = [
     ("computer_settings", "restart", "restarting the machine"),
     ("computer_control", "hotkey", "pressing system hotkeys (e.g. Win+R)"),
     ("file_controller", "delete", "deleting files"),
+    # Phase 9: code_helper is classified READ_ONLY, but its run/build
+    # sub-actions execute code files via subprocess — reachable from the
+    # model with a single tool call. "auto" is included because the intent
+    # is LLM-classified and may resolve to run/build without those words
+    # appearing in the parameters.
+    ("code_helper", "run", "executing a code file"),
+    ("code_helper", "build", "writing code and executing it"),
+    ("code_helper", "auto", "auto-detecting the coding intent (may execute code)"),
 ]
 
 # Config keys this module reads (from config/api_keys.json via settings).

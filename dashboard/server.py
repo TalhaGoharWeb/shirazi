@@ -940,7 +940,8 @@ class DashboardServer:
             return False
 
     def _register_session(self, token: str, session_key: str = "",
-                          *, label: str = "", kind: str = "bearer") -> None:
+                          *, label: str = "", kind: str = "bearer",
+                          device_id: "str | None" = None) -> None:
         """Adopt a freshly-minted bearer into the session manager. The
         legacy in-memory set keeps working alongside (compat fallback)."""
         if self._sessions is None:
@@ -948,7 +949,8 @@ class DashboardServer:
         try:
             self._sessions.adopt(self._local_user_id, token,
                                  session_key=session_key or "",
-                                 label=label, kind=kind)
+                                 label=label, kind=kind,
+                                 device_id=device_id)
         except Exception:
             pass
 
@@ -967,6 +969,25 @@ class DashboardServer:
             except Exception:
                 pass
         return None
+
+    def _purge_device_bearers(self, session_keys) -> int:
+        """Drop legacy in-memory bearer tokens minted from revoked devices.
+
+        Phase 9 hardening: `_auth` consults the in-memory `_tokens` set
+        *before* the SessionManager, so revoking a device's session records
+        alone would leave its already-minted bearer tokens working. Bearer
+        tokens minted via /api/device-login carry the device's channel key
+        in `_token_keys`; purging by that key restores the cascade.
+        """
+        keys = {k for k in session_keys if k}
+        if not keys:
+            return 0
+        doomed = [t for t in list(self._tokens)
+                  if self._token_keys.get(t) in keys]
+        for t in doomed:
+            self._tokens.discard(t)
+            self._token_keys.pop(t, None)
+        return len(doomed)
 
     # ── callbacks ────────────────────────────────────────────────────────
 
@@ -1171,7 +1192,18 @@ class DashboardServer:
             self._tokens.add(tok)
             self._token_keys[tok] = session_key
             self._aes_key(session_key)
-            self._register_session(tok, session_key, label="device-login")
+            # Phase 9: link the bearer to its device so revoking the
+            # device cascades to this session (revoke_device /
+            # revoke_all_devices clear sessions by device_id).
+            _dev_id = None
+            if self._sessions is not None:
+                try:
+                    _d = self._sessions.find_device(dev_tok)
+                    _dev_id = _d.id if _d else None
+                except Exception:
+                    _dev_id = None
+            self._register_session(tok, session_key, label="device-login",
+                                   device_id=_dev_id)
             if self._connect_callback:
                 self._connect_callback()
             asyncio.create_task(self.broadcast(
@@ -1185,7 +1217,12 @@ class DashboardServer:
             if not _auth(req):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             count = len(self._device_sessions)
+            # Phase 9: cascade into the legacy in-memory bearer sets -- a
+            # bearer minted via /api/device-login must die with its device.
+            revoked_keys = {rec.get("session_key")
+                            for rec in self._device_sessions.values()}
             self._device_sessions.clear()
+            count += self._purge_device_bearers(revoked_keys)
             if self._sessions is not None:
                 try:
                     count += self._sessions.revoke_all_devices(

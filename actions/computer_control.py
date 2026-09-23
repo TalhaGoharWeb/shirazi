@@ -256,6 +256,11 @@ def _clear_field() -> str:
     return "Field cleared"
 
 def _focus_window(title: str) -> str:
+    # Phase 9 hardening: `title` is LLM-influenced and is interpolated into a
+    # PowerShell / osascript script string below. Strip quote/backtick/$
+    # newline characters so a crafted title cannot break out of the quoted
+    # string (the tool itself stays USER_CONFIRMATION-gated regardless).
+    title = re.sub(r'["`$\r\n]', "", str(title or ""))[:120]
     os_name = _get_os()
 
     if os_name == "windows":
