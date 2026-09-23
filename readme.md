@@ -301,6 +301,10 @@ Issues and PRs are welcome. Please:
 
 ---
 
+## Developer
+
+**Muhammad Talha Bin Fareed** — muhaqqiqcreates@gmail.com
+
 ## License
 
 MIT — see `LICENSE`. Upstream Mark-LIV/JARVIS copyright by FatihMakes is
