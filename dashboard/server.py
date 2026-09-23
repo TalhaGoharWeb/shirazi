@@ -40,6 +40,14 @@ STATIC_DIR  = Path(__file__).parent / "static"
 PORT        = 8000
 MAX_UPLOAD_MB = 500
 
+# ── PIN rate limiting (Phase 2) ─────────────────────────────────────────────
+# Bounded brute-force protection for the PIN entry endpoints (/login and
+# /auto-login). Failures are counted per client IP; a successful login clears
+# the counter. Full auth overhaul is scheduled for Phase 7/8.
+PIN_MAX_ATTEMPTS   = 5      # failed attempts before lockout
+PIN_LOCKOUT_SECS   = 300    # lockout duration in seconds (5 min)
+PIN_ATTEMPT_WINDOW = 600    # failures older than this stop counting (10 min)
+
 
 def _make_uploads_dir() -> Path:
     """Return (and create) the cross-platform uploads folder."""
@@ -466,12 +474,54 @@ class DashboardServer:
         self._wake_callback               = None
         self._connect_callback            = None
         self._pending_keys: dict[str, float] = {}
+        self._pin_attempts: dict[str, list] = {}  # client_ip → [fails, first_ts, locked_until]
         self._device_sessions: dict[str, dict] = {}  # device_token → {session_key}
         self._phone_audio_queue: asyncio.Queue    = asyncio.Queue(maxsize=200)
         self._uploads_dir                 = UPLOADS_DIR
         self._login_html                  = _read("login.html")
         self._app_html                    = _read("app.html")
         self.app                          = self._build_app()
+
+    # ── PIN rate limiting (Phase 2) ─────────────────────────────────────────
+
+    @staticmethod
+    def _client_ip(req) -> str:
+        try:
+            return req.client.host if req.client else "unknown"
+        except Exception:
+            return "unknown"
+
+    def _pin_lock_remaining(self, ip: str) -> float:
+        """Seconds of lockout remaining for this IP, or 0.0 if not locked."""
+        rec = self._pin_attempts.get(ip)
+        if not rec:
+            return 0.0
+        now = time.time()
+        if now >= rec[2]:
+            return 0.0
+        return rec[2] - now
+
+    def _pin_failed(self, ip: str) -> None:
+        """Record a failed PIN attempt; locks the IP out when over the limit."""
+        now = time.time()
+        # prune stale entries so the dict stays bounded
+        self._pin_attempts = {
+            k: v for k, v in self._pin_attempts.items()
+            if now < v[2] or now - v[1] <= PIN_ATTEMPT_WINDOW
+        }
+        rec = self._pin_attempts.get(ip)
+        if rec and now - rec[1] > PIN_ATTEMPT_WINDOW:
+            rec = None  # stale window: start over
+        fails = (rec[0] if rec else 0) + 1
+        first_ts = rec[1] if rec else now
+        locked_until = rec[2] if rec else 0.0
+        if fails >= PIN_MAX_ATTEMPTS:
+            locked_until = now + PIN_LOCKOUT_SECS
+        self._pin_attempts[ip] = [fails, first_ts, locked_until]
+
+    def _pin_ok(self, ip: str) -> None:
+        """A successful login clears this IP's failure counter."""
+        self._pin_attempts.pop(ip, None)
 
     # ── one-time key management ───────────────────────────────────────────
 
@@ -570,8 +620,15 @@ class DashboardServer:
             body    = await req.json()
             entered = str(body.get("pin", "")).strip().upper()
             now     = time.time()
+            ip      = self._client_ip(req)
+            locked  = self._pin_lock_remaining(ip)
+            if locked > 0:
+                return JSONResponse(
+                    {"ok": False, "error": f"Too many attempts. Try again in {int(locked)}s."},
+                    status_code=429)
             if entered in self._pending_keys and self._pending_keys[entered] > now:
                 del self._pending_keys[entered]          # one-time use
+                self._pin_ok(ip)                          # success clears the counter
                 tok = secrets.token_urlsafe(32)
                 self._tokens.add(tok)
                 self._token_keys[tok] = entered
@@ -583,14 +640,23 @@ class DashboardServer:
                 ))
                 # Bearer token in response body — no cookies needed (works on any browser/HTTP)
                 return JSONResponse({"ok": True, "token": tok})
+            self._pin_failed(ip)
             return JSONResponse({"ok": False, "error": "Invalid or expired key"},
                                 status_code=401)
 
         @app.get("/auto-login")
-        async def auto_login(key: str = ""):
+        async def auto_login(key: str = "", req: Request = None):
             """QR code target — validates one-time key, creates session, redirects phone."""
             now = time.time()
+            ip = self._client_ip(req) if req is not None else "unknown"
+            locked = self._pin_lock_remaining(ip)
+            if locked > 0:
+                return HTMLResponse(
+                    f"<html><body><h2>Too Many Attempts</h2>"
+                    f"<p>Try again in {int(locked)}s.</p></body></html>",
+                    status_code=429)
             if not key or key not in self._pending_keys or self._pending_keys[key] <= now:
+                self._pin_failed(ip)
                 return HTMLResponse("""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
 <style>
@@ -603,6 +669,7 @@ class DashboardServer:
 </div></body></html>""")
 
             del self._pending_keys[key]
+            self._pin_ok(ip)                              # success clears the counter
             tok     = secrets.token_urlsafe(32)
             dev_tok = secrets.token_urlsafe(32)
             self._tokens.add(tok)

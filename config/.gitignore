@@ -1,0 +1,11 @@
+# Defense-in-depth: the root .gitignore already ignores these, but this local
+# guard protects the config directory itself if it is ever moved or the root
+# .gitignore is edited.
+api_keys.json
+certs/
+whatsapp_web/
+*credentials*.json
+token*.json
+client_secret*.json
+.env
+.env.*

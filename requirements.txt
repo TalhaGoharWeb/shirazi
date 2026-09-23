@@ -44,12 +44,9 @@ cryptography>=42,<50
 python-multipart>=0.0.9,<1
 qrcode[pil]>=7,<9
 
-# ── Plugin extras: Gmail / Google Calendar (OAuth) ────────────────────────────
-google-api-python-client
-google-auth-oauthlib
-
-# ── Plugin extras: Tuya / Smart Life smart light (home_assistant) ─────────────
-tinytuya
+# REMOVED (Phase 2, 2026-09-23): google-api-python-client, google-auth-oauthlib,
+# tinytuya, paho-mqtt — zero importers repo-wide, no plugin ships for them.
+# Re-add if a plugin that needs them is written.
 
 # ── Windows-only (pip skips these automatically on macOS / Linux) ─────────────
 comtypes;   sys_platform == "win32"
@@ -70,7 +67,6 @@ ddgs>=9,<10                  # web_search — the maintained successor to
 pdfplumber                   # file_processor — PDF text and tables
 PyPDF2                       # file_processor — PDF fallback reader
 python-docx                  # file_processor — .docx reading
-paho-mqtt                    # printer_control plugin — MQTT printers
 pynvml                       # system_monitor + the HUD's GPU meter (NVIDIA)
 
 # ── Optional: heavy extras, install only if you want the feature ──────────────
