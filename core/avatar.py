@@ -30,7 +30,7 @@ import random
 
 import numpy as np
 from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF, QRadialGradient
+from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen, QPolygonF, QRadialGradient
 
 from core.avatar_mesh import JAW_MAX, JAW_PIVOT, get_head_mesh
 
@@ -283,21 +283,43 @@ class HoloAvatar:
 
         # -- headwear -----------------------------------------------------
         if hw == "kofia":
-            # Embroidered kofia: close-fitting cap hugging the skull, dome
-            # top just above the crown (-1.06r), lower edge mid-forehead.
-            p.setPen(QPen(_c(primary, 160), 1.4))
-            p.setBrush(QBrush(_c(hw_col, 200)))
+            # Embroidered kofia: close-fitting cap hugging the skull with a
+            # soft fabric gradient, an 8-point star (khatam) lattice worked
+            # in trim thread, and a patterned hem band.
             cap = QRectF(cx - r * 0.48, cy - r * 1.06, r * 0.96, r * 0.74)
+            fab = QLinearGradient(0, cy - r * 1.06, 0, cy - r * 0.32)
+            fab.setColorAt(0.0, _c(hw_col.lighter(118), 215))
+            fab.setColorAt(0.7, _c(hw_col, 215))
+            fab.setColorAt(1.0, _c(hw_col.darker(135), 215))
+            p.setPen(QPen(_c(primary, 160), 1.4))
+            p.setBrush(QBrush(fab))
             p.drawChord(cap, 0, 180 * 16)
-            # Diamond embroidery motif along the cap's lower edge.
+            # Khatam star lattice: two rows of eight-pointed stars.
             p.setPen(QPen(trim, 1.1))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            n = 7
+            def _khatam(sx, sy, s):
+                for rot in (0.0, math.pi / 4):
+                    pts = [QPointF(sx + s * math.cos(rot + i * math.pi / 2),
+                                   sy + s * math.sin(rot + i * math.pi / 2))
+                           for i in range(4)]
+                    p.drawPolygon(QPolygonF(pts))
+            for row, (ry, n, s) in enumerate(((-0.86, 5, 0.042),
+                                              (-0.74, 6, 0.036))):
+                for i in range(n):
+                    t_ = i / max(1, n - 1)
+                    _khatam(cx - r * 0.34 + t_ * r * 0.68,
+                            cy + r * ry, r * s)
+            # Hem band with a running diamond stitch.
+            p.setPen(QPen(_c(hw_col.darker(150), 160), 1.0))
+            p.drawArc(QRectF(cx - r * 0.44, cy - r * 1.00,
+                             r * 0.88, r * 0.62), 12 * 16, 156 * 16)
+            p.setPen(QPen(trim, 1.2))
+            n = 9
             for i in range(n):
                 t_ = i / max(1, n - 1)
                 px = cx - r * 0.40 + t_ * r * 0.80
-                py = cy - r * 0.69
-                s = r * 0.038
+                py = cy - r * 0.655
+                s = r * 0.026
                 p.drawPolygon(QPolygonF([
                     QPointF(px, py - s), QPointF(px + s, py),
                     QPointF(px, py + s), QPointF(px - s, py)]))
@@ -310,37 +332,132 @@ class HoloAvatar:
                                          r * 0.60, r * 0.085),
                                   r * 0.035, r * 0.035)
         elif hw == "turban":
-            # Scholar-style turban: one sand dome hugging the skull with
-            # curved fold lines reading as wrapped cloth (never stacked
-            # discs), over a dark under-cap whose edge shows at the brow.
+            # Scholar's turban, built like real wrapped cloth: a dark
+            # under-cap, a shaded base dome, then four overlapping wrap
+            # bands. Each band is stroked with a vertical gradient (light
+            # crown -> dark tucked edge) so the overlaps read as folds,
+            # finished with a top knot, a jewelled brooch and a side drape.
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QBrush(_c(_rgb(desc.get("cap_color",
-                                               (20, 30, 36))), 220)))
+                                               (20, 30, 36))), 225)))
             p.drawChord(QRectF(cx - r * 0.58, cy - r * 1.02,
                                r * 1.16, r * 1.10), 0, 180 * 16)
-            grad = QRadialGradient(cx, cy - r * 0.75, r * 0.75)
-            grad.setColorAt(0.0, _c(QColor(255, 255, 255), 235))
-            grad.setColorAt(1.0, _c(hw_col, 215))
+            # Base dome: soft fabric shading, bright crown falling to a
+            # deeper tone at the sides.
+            grad = QRadialGradient(cx, cy - r * 0.80, r * 0.12,
+                                   cx, cy - r * 0.80, r * 0.85)
+            grad.setColorAt(0.0, _c(hw_col.lighter(122), 228))
+            grad.setColorAt(0.6, _c(hw_col, 222))
+            grad.setColorAt(1.0, _c(hw_col.darker(135), 222))
             p.setBrush(QBrush(grad))
             p.drawChord(QRectF(cx - r * 0.62, cy - r * 1.10,
                                r * 1.24, r * 1.36), 0, 180 * 16)
-            # Wrap fold lines following the dome curvature.
-            p.setPen(QPen(_c(trim, 110), 1.2))
+            # Wrap bands, top to bottom; each lower band tucks over the one
+            # above so the dark lower edge reads as an overlap shadow.
             p.setBrush(Qt.BrushStyle.NoBrush)
-            for fy, ww in ((-0.94, 0.38), (-0.80, 0.49),
-                           (-0.66, 0.56), (-0.53, 0.59)):
-                p.drawArc(QRectF(cx - ww * r, cy + fy * r - r * 0.10,
-                                 ww * 2 * r, r * 0.20), 0, 180 * 16)
+            for bi, (rx, ry) in enumerate(((0.60, 0.66), (0.585, 0.595),
+                                          (0.55, 0.525), (0.505, 0.45))):
+                w = r * 0.125
+                y_top = cy - r * 0.42 - ry * r - w / 2
+                band = QLinearGradient(0, y_top, 0, y_top + w)
+                band.setColorAt(0.00, _c(hw_col, 232))
+                band.setColorAt(0.62, _c(hw_col.darker(130), 232))
+                band.setColorAt(1.00, _c(hw_col.darker(205), 232))
+                p.setPen(QPen(QBrush(band), w))
+                _span0 = 20 if bi == 3 else 27
+                _span1 = 140 if bi == 3 else 126
+                p.drawArc(QRectF(cx - rx * r, cy - r * 0.42 - ry * r,
+                                 rx * 2 * r, ry * 2 * r),
+                        _span0 * 16, _span1 * 16)
+            # Top knot: a small gathered crown where the wraps meet.
+            knot = QRadialGradient(cx, cy - r * 1.06, r * 0.11,
+                                   cx - r * 0.03, cy - r * 1.12)
+            knot.setColorAt(0.0, _c(hw_col, 235))
+            knot.setColorAt(1.0, _c(hw_col.darker(170), 235))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(knot))
+            p.drawEllipse(QPointF(cx, cy - r * 1.06), r * 0.105, r * 0.075)
+            # Jewelled brooch pinned to the front band.
+            jx, jy = cx, cy - r * 0.865
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(_c(QColor(35, 28, 18), 245)))
+            p.drawEllipse(QPointF(jx, jy), r * 0.068, r * 0.082)
+            jgold = QRadialGradient(jx, jy, r * 0.075,
+                                    jx - r * 0.015, jy - r * 0.02)
+            jgold.setColorAt(0.0, _c(QColor(255, 226, 150), 245))
+            jgold.setColorAt(1.0, _c(QColor(150, 105, 30), 245))
+            p.setBrush(QBrush(jgold))
+            p.drawEllipse(QPointF(jx, jy), r * 0.060, r * 0.074)
+            jem = QRadialGradient(jx, jy, r * 0.062,
+                                  jx - r * 0.010, jy - r * 0.018)
+            jem.setColorAt(0.0, _c(QColor(190, 255, 220), 250))
+            jem.setColorAt(0.55, _c(QColor(20, 160, 110), 250))
+            jem.setColorAt(1.0, _c(QColor(8, 80, 55), 250))
+            p.setBrush(QBrush(jem))
+            p.drawEllipse(QPointF(jx, jy), r * 0.046, r * 0.060)
+            p.setBrush(QBrush(_c(QColor(255, 255, 255), 200)))
+            p.drawEllipse(QPointF(jx - r * 0.012, jy - r * 0.018),
+                        r * 0.010, r * 0.013)
+            # Side drape (shamla): a tapered tail falling past the temple,
+            # tucked under the lowest band.
+            drape = QLinearGradient(0, cy - r * 0.55, 0, cy + r * 0.12)
+            drape.setColorAt(0.0, _c(hw_col.darker(130), 230))
+            drape.setColorAt(1.0, _c(hw_col.darker(190), 230))
+            p.setBrush(QBrush(drape))
+            p.drawPolygon(QPolygonF([
+                QPointF(cx + r * 0.50, cy - r * 0.58),
+                QPointF(cx + r * 0.60, cy - r * 0.55),
+                QPointF(cx + r * 0.565, cy + r * 0.10),
+                QPointF(cx + r * 0.475, cy + r * 0.085)]))
+            p.setPen(QPen(_c(hw_col.darker(170), 130), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QPointF(cx + r * 0.55, cy - r * 0.52),
+                       QPointF(cx + r * 0.525, cy + r * 0.09))
         elif hw == "kufi":
-            # Taqiyah skull cap: close-fitting cap + one geometric band.
+            # Taqiyah skull cap: close-fitting dome with fabric shading and
+            # a woven geometric band (diamonds + dots) circling the base.
+            cap = QRectF(cx - r * 0.50, cy - r * 1.08, r * 1.00, r * 0.80)
+            fab = QRadialGradient(cx, cy - r * 0.95, r * 0.62,
+                                  cx, cy - r * 1.03)
+            fab.setColorAt(0.0, _c(hw_col.lighter(165), 225))
+            fab.setColorAt(0.55, _c(hw_col.lighter(120), 225))
+            fab.setColorAt(1.0, _c(hw_col.darker(125), 225))
             p.setPen(QPen(_c(primary, 150), 1.3))
-            p.setBrush(QBrush(_c(hw_col, 210)))
-            p.drawChord(QRectF(cx - r * 0.50, cy - r * 1.08,
-                               r * 1.00, r * 0.80), 0, 180 * 16)
-            p.setPen(QPen(trim, 1.4))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawArc(QRectF(cx - r * 0.46, cy - r * 1.00,
-                             r * 0.92, r * 0.64), 15 * 16, 150 * 16)
+            p.setBrush(QBrush(fab))
+            p.drawChord(cap, 0, 180 * 16)
+            # Woven band: two trim arcs framing a diamond-and-dot pattern.
+            p.setPen(QPen(trim, 1.2))
+            p.setBrush(QBrush(_c(trim, 40)))
+            _mx, _my, _ms = cx, cy - r * 0.90, r * 0.055
+            for _rot in (0.0, math.pi / 4):
+                _mpts = [QPointF(_mx + _ms * math.cos(_rot + i * math.pi / 2),
+                                 _my + _ms * math.sin(_rot + i * math.pi / 2))
+                         for i in range(4)]
+                p.drawPolygon(QPolygonF(_mpts))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(trim))
+            p.drawEllipse(QPointF(_mx, _my), r * 0.014, r * 0.014)
+            p.setPen(QPen(trim, 1.3))
+            p.drawArc(QRectF(cx - r * 0.465, cy - r * 1.005,
+                             r * 0.93, r * 0.65), 14 * 16, 152 * 16)
+            p.drawArc(QRectF(cx - r * 0.44, cy - r * 0.94,
+                             r * 0.88, r * 0.55), 14 * 16, 152 * 16)
+            n = 11
+            for i in range(n):
+                t_ = i / max(1, n - 1)
+                px = cx - r * 0.40 + t_ * r * 0.80
+                py = cy - r * 0.70
+                s = r * 0.024
+                if i % 2:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QBrush(trim))
+                    p.drawEllipse(QPointF(px, py), s * 0.55, s * 0.55)
+                    p.setPen(QPen(trim, 1.2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                else:
+                    p.drawPolygon(QPolygonF([
+                        QPointF(px, py - s), QPointF(px + s, py),
+                        QPointF(px, py + s), QPointF(px - s, py)]))
     def _mouth_step(self, dt: float, amp: float, live: bool,
                     v_open: float | None, v_level: float | None) -> None:
         """One increment of the jaw. Called once per viseme frame while SHIRAZI
@@ -644,6 +761,7 @@ class HoloAvatar:
 
         if self.shaded:
             self._paint_surface(p, xs, ys, norms, verts, primary, bg, amp)
+            self._paint_cinematic(p, cx, cy, r, primary, amp)
         self._paint_wire(p, xs, ys, norms, verts, primary, bg, amp)
         self._paint_features(p, xs, ys, norms, r, primary, accent, bg, amp)
         self._paint_headwear(p, cx, cy, r, primary, accent)
@@ -711,6 +829,49 @@ class HoloAvatar:
             p.drawPolygon(QPolygonF([QPointF(q[0], q[1]), QPointF(q[2], q[3]),
                                      QPointF(q[4], q[5])]))
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    def _paint_cinematic(self, p: QPainter, cx: float, cy: float, r: float,
+                         primary: QColor, amp: float) -> None:
+        """Cinematic light pass over the shaded head: key-light sheen, rim
+        glow hugging the silhouette, and drifting holographic scanlines.
+
+        Called after the surface fill and before the wireframe, so the
+        structure lines stay crisp on top of the light.
+        """
+        p.setPen(Qt.PenStyle.NoPen)
+
+        # Key-light sheen: a soft cool highlight falling from the upper left.
+        sheen = QRadialGradient(cx - r * 0.45, cy - r * 0.55, r * 0.10,
+                                cx - r * 0.45, cy - r * 0.55, r * 1.10)
+        sheen.setColorAt(0.0, _c(QColor(235, 252, 255), 52 + 34 * amp))
+        sheen.setColorAt(0.55, _c(QColor(200, 240, 250), 16))
+        sheen.setColorAt(1.0, _c(QColor(200, 240, 250), 0))
+        p.setBrush(QBrush(sheen))
+        p.drawEllipse(QRectF(cx - r * 0.78, cy - r * 1.08, r * 1.56, r * 2.16))
+
+        # Rim light: a bright edge hugging the silhouette, fading inward.
+        # (Focal point kept at the centre: always inside the circle, so Qt
+        # actually paints it.)
+        rim = QRadialGradient(cx, cy, r * 1.02)
+        rim.setColorAt(0.00, _c(primary, 0))
+        rim.setColorAt(0.70, _c(primary, 0))
+        rim.setColorAt(0.90, _c(primary, 95 + 65 * amp))
+        rim.setColorAt(1.00, _c(primary, 0))
+        p.setBrush(QBrush(rim))
+        p.drawEllipse(QRectF(cx - r * 0.80, cy - r * 1.10, r * 1.60, r * 2.20))
+
+        # Holographic scanlines drifting slowly down the face, clipped to an
+        # elliptical head approximation so they never draw on the background.
+        p.setPen(QPen(_c(primary, 13 + 9 * amp), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        drift = (self._t * 9.0) % 7.0
+        y = cy - r * 1.02 + drift
+        while y < cy + r * 1.02:
+            ny = (y - cy) / (r * 1.05)
+            if abs(ny) < 1.0:
+                hw = r * 0.70 * math.sqrt(max(0.0, 1.0 - ny * ny))
+                p.drawLine(QPointF(cx - hw, y), QPointF(cx + hw, y))
+            y += 7.0
 
     def _paint_wire(self, p: QPainter, xs, ys, norms, verts,
                     primary: QColor, bg: QColor, amp: float) -> None:
@@ -807,6 +968,12 @@ class HoloAvatar:
                 cpt = QPointF(gx, gy)
                 rad = min(br.height() * 0.62, br.width() * 0.20)
                 p.setPen(Qt.PenStyle.NoPen)
+                # Soft halo so the eyes read as lit optics, not paint.
+                halo = QRadialGradient(gx, gy, rad * 2.6)
+                halo.setColorAt(0.0, _c(accent, (110 + 70 * amp) * face * vis))
+                halo.setColorAt(1.0, _c(accent, 0))
+                p.setBrush(QBrush(halo))
+                p.drawEllipse(QPointF(gx, gy), rad * 2.6, rad * 2.6 * vis)
                 p.setBrush(QBrush(_c(accent, (70 + 60 * amp) * face * vis)))
                 p.drawEllipse(cpt, rad, rad * vis)            # iris
                 p.setBrush(QBrush(_c(accent, 245 * face * vis)))

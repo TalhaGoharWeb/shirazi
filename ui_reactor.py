@@ -21,6 +21,7 @@ in the central sphere — everything else stays quiet.
 from __future__ import annotations
 
 import math
+import random
 import time
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -259,6 +260,63 @@ class ReactorWidget(QWidget):
         p.setPen(QPen(_c(acc, 190), 1.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(cx - sr_, cy - sr_, sr_ * 2, sr_ * 2))
+
+        # 14b. plasma arcs — jagged energy discharges between the iris
+        # and the sphere. Each arc is a seeded random walk, drawn twice:
+        # a wide faint pass for glow, then a thin hot core.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for k in range(3):
+            aa = t * (0.7 + 0.23 * k) + k * 2.4
+            r0, r1 = sr_ * 1.05, r * (0.62 + 0.10 * prm.iris)
+            segs = 14
+            pts = []
+            rnd = random.Random(1000 + k * 77 + int(t * 3 + k * 9) % 5)
+            for i in range(segs + 1):
+                f = i / segs
+                rr = r0 + (r1 - r0) * f
+                wob = (rnd.random() - 0.5) * r * 0.09 * math.sin(f * math.pi)
+                ang = aa + wob / max(rr, 1.0)
+                pts.append(QPointF(cx + rr * math.cos(ang),
+                                   cy + rr * math.sin(ang)))
+            path = QPainterPath()
+            path.moveTo(pts[0])
+            for pt in pts[1:]:
+                path.lineTo(pt)
+            hot = 0.35 + 0.65 * prm.glow
+            p.setPen(QPen(_c(QColor("#d8f6ff"), 46 * hot), 3.2))
+            p.drawPath(path)
+            p.setPen(QPen(_c(QColor("#eafcff"), 150 * hot), 1.1))
+            p.drawPath(path)
+
+        # 14c. core bloom — a second, wider soft halo so the sphere feels
+        # like it is radiating, not just filled.
+        bloom = QRadialGradient(cx, cy, sr_ * 2.6)
+        bloom.setColorAt(0.0, _c(acc, 44 + 50 * prm.glow))
+        bloom.setColorAt(1.0, _c(acc, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(bloom))
+        p.drawEllipse(QRectF(cx - sr_ * 2.6, cy - sr_ * 2.6,
+                             sr_ * 5.2, sr_ * 5.2))
+
+        # 14d. energy pulses — bright packets orbiting the tick ring.
+        p.setPen(Qt.PenStyle.NoPen)
+        for k in range(3):
+            pa = -t * (0.9 + 0.2 * k) + k * 2.094
+            px, py = cx + r * 1.35 * math.cos(pa), cy + r * 1.35 * math.sin(pa)
+            pg = QRadialGradient(px, py, 1.0, px, py, 7.0)
+            pg.setColorAt(0.0, _c(QColor("#ffffff"), 230))
+            pg.setColorAt(0.4, _c(acc, 150))
+            pg.setColorAt(1.0, _c(acc, 0))
+            p.setBrush(QBrush(pg))
+            p.drawEllipse(QRectF(px - 7, py - 7, 14, 14))
+
+        # 14e. sphere highlight sweep — a bright arc circling the rim.
+        p.setPen(QPen(_c(QColor("#ffffff"), 120 + 80 * prm.glow), 2.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        sa0 = math.degrees(t * 1.4)
+        p.drawArc(QRectF(cx - sr_ * 1.02, cy - sr_ * 1.02,
+                         sr_ * 2.04, sr_ * 2.04),
+                  int(sa0 * 16), int(46 * 16))
 
         # 15. lens flare — one restrained horizontal streak
         if prm.glow > 0.45:
