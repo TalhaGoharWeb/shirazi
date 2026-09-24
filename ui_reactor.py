@@ -215,6 +215,10 @@ class ReactorWidget(QWidget):
         # 12. 72-point waveform ring — the real spectral shape
         ring_r = r * 1.52
         p.setPen(QPen(_c(state_col, 150), 1.3))
+        # The path is closed: it must NEVER be filled — an earlier build
+        # left the spoke-tip brush active here and the whole ring painted
+        # as one giant solid disc over the core.
+        p.setBrush(Qt.BrushStyle.NoBrush)
         path = QPainterPath()
         for i, v in enumerate(prm.waveform_ring[:WAVEFORM_POINTS]):
             a = 2 * math.pi * i / WAVEFORM_POINTS - math.pi / 2
@@ -241,8 +245,10 @@ class ReactorWidget(QWidget):
 
         # 14. central energy sphere — scale + glow driven by audio
         sr_ = r * 0.42 * prm.sphere_scale
-        sg = QRadialGradient(cx - sr_ * 0.3, cy - sr_ * 0.35, sr_ * 0.2,
-                             cx, cy, sr_)
+        # NOTE: the focal point must stay INSIDE the gradient circle. An
+        # earlier 6-arg QRadialGradient put the focal point outside the
+        # circle and Qt painted nothing at all — the sphere was invisible.
+        sg = QRadialGradient(cx, cy, sr_, cx - sr_ * 0.3, cy - sr_ * 0.35)
         sg.setColorAt(0.0, _c(QColor("#eaffff"), 200))
         sg.setColorAt(0.35, _c(acc, 170))
         sg.setColorAt(1.0, _c(acc, 30))
