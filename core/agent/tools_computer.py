@@ -204,7 +204,7 @@ _SPECS: list[tuple[str, str, Level, dict, Callable]] = [
     ("keyboard_hotkey",
      "Press a key combination, e.g. ['ctrl','c']. Needs confirmation.",
      Level.USER_CONFIRMATION,
-     {"type": "object", "properties": {"keys": {"type": "ARRAY"}}},
+     {"type": "object", "properties": {"keys": {"type": "ARRAY", "items": {"type": "STRING"}}}},
      keyboard_hotkey),
     ("scroll",
      "Scroll up/down. Needs confirmation.",

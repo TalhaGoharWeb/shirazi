@@ -199,6 +199,39 @@ def _agent_tool_declarations() -> list:
         return []
 
 
+def _sanitize_declarations(declarations) -> list:
+    """Repair tool schemas Google's Live API would reject outright.
+
+    The server closes the session setup (websocket 1007) when any function
+    declaration has an array-typed property without an ``items`` schema — and
+    it reports the *close code*, not the cause, so a naive classifier blames
+    the API key. Walk every declaration and patch the omission with a
+    string-items default (plus drop malformed ``required`` fields), so one
+    sloppy tool definition can never take the whole voice session down.
+    Guarded throughout: a weird declaration is skipped, never fatal.
+    """
+    def _fix(node):
+        if isinstance(node, dict):
+            t = node.get("type")
+            if isinstance(t, str) and t.upper() == "ARRAY" and "items" not in node:
+                node["items"] = {"type": "STRING"}
+            if "required" in node and not isinstance(node["required"], list):
+                node.pop("required", None)
+            for v in node.values():
+                _fix(v)
+        elif isinstance(node, list):
+            for v in node:
+                _fix(v)
+    out = []
+    for d in declarations or ():
+        try:
+            _fix(d)
+            out.append(d)
+        except Exception:
+            continue
+    return out
+
+
 def _describe_tools(declarations) -> str:
     """One line per capability, straight from the live tool declarations.
 
@@ -614,6 +647,8 @@ class ShiraziLive:
         # conversation that never ends never produces a summary, and the
         # "yesterday we talked about…" line silently disappears.
         self._resume_handle: str | None = None
+        self._schema_fail_streak = 0   # consecutive tool-schema rejections
+        self._tools_disabled = False  # set when schemas keep failing
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
@@ -1050,10 +1085,11 @@ class ShiraziLive:
         # the host, the capability list from the registries that were just
         # discovered. Rename the assistant, add a plugin or move to another OS
         # and this follows without anyone editing a prompt.
-        _all_decls = (TOOL_DECLARATIONS
-                      + self._action_registry.get_tool_declarations()
-                      + self._plugin_registry.get_tool_declarations()
-                      + _agent_tool_declarations())
+        _all_decls = _sanitize_declarations(
+            TOOL_DECLARATIONS
+            + self._action_registry.get_tool_declarations()
+            + self._plugin_registry.get_tool_declarations()
+            + _agent_tool_declarations())
         _names = {(d.get("name") if isinstance(d, dict) else getattr(d, "name", ""))
                   for d in _all_decls}
         sys_prompt = _render_prompt(sys_prompt, {
@@ -1076,7 +1112,8 @@ class ShiraziLive:
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": _all_decls}],
+            tools=([{"function_declarations": _all_decls}]
+                   if not getattr(self, "_tools_disabled", False) else []),
             # Hand back the handle captured from the last session_resumption
             # update. `handle=None` is exactly the old behaviour (ask for
             # handles, start fresh), so the first connect of a run is unchanged.
@@ -2317,6 +2354,9 @@ class ShiraziLive:
                     self.out_queue        = asyncio.Queue(maxsize=200)
                     self._turn_done_event = asyncio.Event()
 
+                    # A live session finally connected — the schema path is healthy again.
+                    self._schema_fail_streak = 0
+                    self._tools_disabled = False
                     # Reset transient state that must not carry over from a previous session
                     self._pending_vision       = None
                     self._vision_cam_active    = False
@@ -2440,8 +2480,28 @@ class ShiraziLive:
                     )
                     continue
 
-                # Invalid API key — stop hammering the API, prompt re-configuration
-                if "API key not valid" in err_str or "1007" in err_str:
+                # Malformed tool schema — Google closes the whole session setup
+                # (websocket 1007) and the message names the declaration, not
+                # the key. Retrying the identical config is a hamster wheel, so
+                # after a few attempts drop function calling and keep voice
+                # chat alive instead of looping forever.
+                if "function_declarations" in err_str or "missing field" in err_str:
+                    self._schema_fail_streak = getattr(self, "_schema_fail_streak", 0) + 1
+                    print(f"[SHIRAZI] tool schema rejected "
+                          f"({self._schema_fail_streak}x): {err_str[:160]}")
+                    if self._schema_fail_streak >= 3 and not self._tools_disabled:
+                        self._tools_disabled = True
+                        self.ui.write_log(
+                            "SYS: Tool schemas keep failing — "
+                            "voice chat continues without tools.")
+                    _conn_backoff = 5
+                    continue
+
+                # Invalid API key — stop hammering the API, prompt re-configuration.
+                # NOTE: a bare "1007" is NOT an auth signal — it is only the
+                # websocket close code and also carries schema rejections
+                # (handled above), so it must not trigger the key-retry path.
+                if "API key not valid" in err_str or "API_KEY_INVALID" in err_str:
                     # v1alpha (proactive-audio preview) rejects ordinary AI
                     # Studio keys even when they are perfectly valid. That is
                     # NOT a bad key — silently drop to stable v1beta first.
