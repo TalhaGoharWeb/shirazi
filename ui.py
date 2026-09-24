@@ -224,11 +224,11 @@ def paint_rosette(p, cx: float, cy: float, r: float,
         pts = [QPointF(cx + r * math.cos(rot + i * math.pi / 2),
                        cy + r * math.sin(rot + i * math.pi / 2))
                for i in range(4)]
-        p.drawPolygon(*pts)
+        p.drawPolygon(pts)
     pts = [QPointF(cx + r * 0.55 * math.cos(i * math.pi / 4),
                    cy + r * 0.55 * math.sin(i * math.pi / 4))
            for i in range(8)]
-    p.drawPolygon(*pts)
+    p.drawPolygon(pts)
 
 
 # ── Windows GPU via NVML DLL (no subprocess, no console window) ──────────────
@@ -5733,11 +5733,15 @@ class MainWindow(QMainWindow):
             cfg.get("voice_name", ""),
             parent=cw,
         )
-        ow, oh = CustomizeOverlay._OW, CustomizeOverlay._OH
+        # Size to the actual content (never a forced 400x588): no clipped
+        # buttons on short windows, no dead empty space on tall ones.
+        ov.adjustSize()
+        ow, oh = ov.width(), ov.height()
+        ow = min(ow, cw.width() - 16)
         oh = min(oh, cw.height() - 16)
         ov.setGeometry(
-            (cw.width()  - ow) // 2,
-            (cw.height() - oh) // 2,
+            max(0, (cw.width()  - ow) // 2),
+            max(0, (cw.height() - oh) // 2),
             ow, oh,
         )
         ov.on_preview = self._preview_ui_color

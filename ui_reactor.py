@@ -192,7 +192,7 @@ class ReactorWidget(QWidget):
             pts = [QPointF(cx + hr * math.cos(rot + i * math.pi / 3),
                            cy + hr * math.sin(rot + i * math.pi / 3))
                    for i in range(6)]
-            p.drawPolygon(*pts)
+            p.drawPolygon(pts)
 
         # 10. Islamic geometric rosette — the one cultural signature.
         #     An 8-point star (khatam) drawn faintly behind the sphere.
@@ -308,12 +308,12 @@ class ReactorWidget(QWidget):
             pts = [QPointF(cx + r * math.cos(rot + i * math.pi / 2),
                            cy + r * math.sin(rot + i * math.pi / 2))
                    for i in range(4)]
-            p.drawPolygon(*pts)
+            p.drawPolygon(pts)
         # inner octagon
         pts = [QPointF(cx + r * 0.55 * math.cos(i * math.pi / 4),
                        cy + r * 0.55 * math.sin(i * math.pi / 4))
                for i in range(8)]
-        p.drawPolygon(*pts)
+        p.drawPolygon(pts)
         p.drawEllipse(QRectF(cx - r * 0.30, cy - r * 0.30, r * 0.6, r * 0.6))
 
     def _paint_telemetry(self, p: QPainter, W: float, H: float,
