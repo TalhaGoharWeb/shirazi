@@ -34,10 +34,8 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
 
-try:
-    from core.avatar import HoloAvatar
-except Exception:      # pragma: no cover — HUD must never die over cosmetics
-    HoloAvatar = None
+# AURA-58: the holographic avatar was removed — the arc reactor is the
+# sole centrepiece of the HUD now.
 
 # i18n (Phase 5). Guarded the same way: the HUD must never die over a
 # missing catalog — every t() call falls back to the key itself.
@@ -445,41 +443,20 @@ class HudCanvas(QWidget):
         self.state    = "INITIALISING"
         self._assistant_name = assistant_name
 
-        # The holographic head that fills the HUD. If it could not be imported
-        # we fall back to the old glowing core so the panel is never empty.
+        # AURA-58: the arc reactor is the sole centrepiece. The holographic
+        # avatar was removed — the reactor carries the whole HUD now.
         self._avatar = None
-        if HoloAvatar is not None:
-            try:
-                self._avatar = HoloAvatar()
-            except Exception:
-                self._avatar = None
-        # Phase 5: render mode + avatar style (user config).
-        self.render_mode = "realistic"
-        _style = "default"
+        self.render_mode = "reactor"
+        self.hud_style = "core"
+        # Reactor visual theme: "aura" (amber retro-phosphor) or "nebula"
+        # (cyan hologram). Persisted in config; switched live from the HUD.
+        self.reactor_theme = "aura"
         try:
-            from memory.config_manager import get_render_mode, get_avatar_style
-            self.render_mode = get_render_mode()
-            _style = get_avatar_style()
+            from memory.config_manager import get_reactor_theme
+            self.reactor_theme = get_reactor_theme()
         except Exception:
             pass
-        if self._avatar is not None:
-            try:
-                self._avatar.set_appearance(_style, True, True)
-                # REALISTIC_3D paints the shaded mesh; HOLOGRAM the
-                # wireframe. Reactor mode delegates to ReactorWidget.
-                self._avatar.shaded = (self.render_mode == "realistic")
-            except Exception:
-                pass
         self._reactor_view = None    # lazy ReactorWidget child
-
-        # Which centrepiece to draw. Read once here and changed live by the
-        # settings toggle; the avatar object is kept either way so switching
-        # back is instant and costs no reload.
-        try:
-            from memory.config_manager import get_hud_style
-            self.hud_style = get_hud_style()
-        except Exception:
-            self.hud_style = "face"
         self._core_phase = 0.0
 
         self._tick       = 0
@@ -518,42 +495,32 @@ class HudCanvas(QWidget):
         self._tmr.start(16)
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:
-        """Ask the avatar to look somewhere for a moment (see HoloAvatar.glance)."""
-        try:
-            if self._avatar is not None:
-                self._avatar.glance(dx, dy, hold)
-        except Exception:
-            pass
+        """Legacy avatar hook — now a no-op (the reactor is the centrepiece)."""
 
     def set_render_mode(self, mode: str) -> None:
-        """Switch the centrepiece: realistic → hologram → reactor, live."""
-        from core.avatar_styles import normalize_render_mode
-        mode = normalize_render_mode(mode)
-        self.render_mode = mode
+        """Legacy hook — the HUD is reactor-only now. A theme name
+        ('aura'/'nebula') selects the reactor palette; anything else maps
+        to the default aura theme."""
+        self.set_reactor_theme(mode if mode in ("aura", "nebula") else "aura")
+
+    def set_reactor_theme(self, theme: str) -> None:
+        """Switch the reactor visual theme live: aura ↔ nebula."""
+        theme = theme if theme in ("aura", "nebula") else "aura"
+        self.reactor_theme = theme
         try:
-            if self._avatar is not None:
-                self._avatar.shaded = (mode == "realistic")
+            from memory.config_manager import save_reactor_theme
+            save_reactor_theme(theme)
         except Exception:
             pass
-        if mode == "reactor":
-            self._ensure_reactor()
         try:
             if self._reactor_view is not None:
-                self._reactor_view.setVisible(mode == "reactor")
-                if mode == "reactor":
-                    self._reactor_view.set_state(self.state)
+                self._reactor_view.set_theme(theme)
         except Exception:
             pass
         self.update()
 
     def set_avatar_style(self, style: str) -> None:
-        """Swap the avatar headwear live (default/kofia/turban/kufi)."""
-        try:
-            if self._avatar is not None:
-                self._avatar.set_appearance(style, True, True)
-        except Exception:
-            pass
-        self.update()
+        """Legacy avatar hook — now a no-op (the avatar was removed)."""
 
     def _ensure_reactor(self) -> None:
         if self._reactor_view is not None:
@@ -563,7 +530,11 @@ class HudCanvas(QWidget):
             self._reactor_view = ReactorWidget(self)
             self._reactor_view.setGeometry(self.rect())
             self._reactor_view.set_state(self.state)
-            self._reactor_view.setVisible(self.render_mode == "reactor")
+            try:
+                self._reactor_view.set_theme(self.reactor_theme)
+            except Exception:
+                pass
+            self._reactor_view.setVisible(True)
         except Exception:
             self._reactor_view = None
 
@@ -702,38 +673,32 @@ class HudCanvas(QWidget):
         # starts talking. Same lesson the head's sway taught.
         self._core_phase += min(0.10, max(0.0, dt))
 
-        if self._avatar is not None and self.hud_style == "face":
-            self._avatar.step(dt, amp, speaking=self.speaking,
-                              muted=self.muted, state=self.state,
-                              v_open=v_open, v_wide=v_wide or 0.0,
-                              v_level=v_level, v_seq=v_seq,
-                              v_hop=(sched[2] if sched is not None else 0.02))
-        else:
-            # Fallback core: slow "breathing" base target, lifted by the level.
-            if now - self._last_t > (0.12 if self.speaking else 0.5):
-                if self.speaking:
-                    self._base_scale = 1.03
-                    self._base_halo  = 122.0
-                elif self.muted:
-                    self._base_scale = random.uniform(0.998, 1.002)
-                    self._base_halo  = random.uniform(15, 28)
-                else:
-                    self._base_scale = random.uniform(1.001, 1.008)
-                    self._base_halo  = random.uniform(48, 68)
-                self._last_t = now
-
-            if self.muted:
-                self._tgt_scale, self._tgt_halo = self._base_scale, self._base_halo
-            elif self.speaking:
-                self._tgt_scale = self._base_scale + amp * 0.13
-                self._tgt_halo  = self._base_halo  + amp * 95.0
+        # AURA-58: avatar removed — the reactor core breathes here.
+        # Core: slow "breathing" base target, lifted by the level.
+        if now - self._last_t > (0.12 if self.speaking else 0.5):
+            if self.speaking:
+                self._base_scale = 1.03
+                self._base_halo  = 122.0
+            elif self.muted:
+                self._base_scale = random.uniform(0.998, 1.002)
+                self._base_halo  = random.uniform(15, 28)
             else:
-                self._tgt_scale = self._base_scale + amp * 0.06
-                self._tgt_halo  = self._base_halo  + amp * 75.0
+                self._base_scale = random.uniform(1.001, 1.008)
+                self._base_halo  = random.uniform(48, 68)
+            self._last_t = now
 
-            sp = 0.38 if self.speaking else (0.30 if amp > 0.02 else 0.15)
-            self._scale += (self._tgt_scale - self._scale) * sp
-            self._halo  += (self._tgt_halo  - self._halo)  * sp
+        if self.muted:
+            self._tgt_scale, self._tgt_halo = self._base_scale, self._base_halo
+        elif self.speaking:
+            self._tgt_scale = self._base_scale + amp * 0.13
+            self._tgt_halo  = self._base_halo  + amp * 95.0
+        else:
+            self._tgt_scale = self._base_scale + amp * 0.06
+            self._tgt_halo  = self._base_halo  + amp * 75.0
+
+        sp = 0.38 if self.speaking else (0.30 if amp > 0.02 else 0.15)
+        self._scale += (self._tgt_scale - self._scale) * sp
+        self._halo  += (self._tgt_halo  - self._halo)  * sp
 
         # Phase 5: the reactor visualisation drinks from the same level —
         # audio drives the ring/spokes/sphere, state biases the motion.
@@ -962,50 +927,26 @@ class HudCanvas(QWidget):
             self._grid_key   = _gkey
         p.drawPixmap(0, 0, self._grid_cache)
 
-        # Phase 5: REACTOR render mode. The ReactorWidget child paints
-        # itself (layered visualisation + telemetry + state indicators).
-        if self.render_mode == "reactor":
-            self._ensure_reactor()
-            if self._reactor_view is not None:
-                return
-            # If the widget could not be built (headless/broken env),
-            # fall through to the legacy software core below — the panel
-            # is never left empty.
-
-        # ── holographic head ────────────────────────────────────────────────
-        # Sized to the band between the top of the canvas and the status line,
-        # capped by width, so it fills the HUD at any window size — including
-        # fullscreen — without ever colliding with the status text below.
+        # AURA-58: reactor-only HUD. The ReactorWidget child paints
+        # itself (glassmorphism arc reactor + telemetry + state indicators).
+        # If the widget could not be built (headless/broken env), fall
+        # through to the legacy software core below — the panel is never
+        # left empty.
         _sy_status = cy + fw * 0.40
-        if self._avatar is not None and self.hud_style == "face":
-            _band_t = 12.0
-            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r_head = min(fw * 0.355, _band_h / (self._avatar.SPAN + 0.08))
-            _head_cy = _band_t + (_band_h - self._avatar.SPAN * _r_head) / 2.0 + _r_head
+        self._ensure_reactor()
+        if self._reactor_view is not None:
+            try:
+                if self._reactor_view._theme != self.reactor_theme:
+                    self._reactor_view.set_theme(self.reactor_theme)
+            except Exception:
+                pass
+            return
 
-            if self.muted:
-                _main = _acc = qcol(C.MUTED_C)
-            else:
-                _main = qcol(C.PRI)
-                if self.speaking:
-                    _acc = qcol(C.ACC)
-                elif self.state in ("THINKING", "PROCESSING"):
-                    _acc = qcol(C.ACC2)
-                elif self.state == "LISTENING":
-                    _acc = qcol(C.GREEN)
-                else:
-                    _acc = qcol(C.PRI)
-            self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
-
-        # reactor core — the other centrepiece, and the fallback if the head
-        # could not be built. There is no third path: the old face.png branch
-        # was unreachable (no such file ships) and the bare orb it fell through
-        # to is what this replaces.
-        else:
-            _band_t = 12.0
-            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r = min(W * 0.46, _band_h / 2.0)
-            self._paint_core(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
+        # Legacy software core fallback.
+        _band_t = 12.0
+        _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+        _r = min(W * 0.46, _band_h / 2.0)
+        self._paint_core(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
 
     def _state_display(self) -> str:
         key = "state_" + str(self.state).lower()
@@ -4652,9 +4593,9 @@ class MainWindow(QMainWindow):
         self._style_btn.setFont(QFont("Courier New", 7))
         self._style_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._style_btn.setStyleSheet(_BTN_STYLE_DIM)
-        self._style_btn.clicked.connect(self._cycle_avatar_style)
+        self._style_btn.clicked.connect(self._cycle_reactor_theme)
         lay.addWidget(self._style_btn)
-        self._refresh_style_btn()
+        self._refresh_theme_btn()
 
         telemetry_btn = QPushButton("◈  " + t("telemetry_title").upper())
         telemetry_btn.setFixedHeight(26)
@@ -4720,37 +4661,31 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ── Phase 5: avatar style cycling + telemetry (quick drawer) ─────────
-    def _cycle_avatar_style(self) -> None:
-        """Quick-drawer style button: cycle headwear default → kofia → turban → kufi."""
+    # ── AURA-58: reactor theme cycling (quick drawer) ────────────────────
+    def _cycle_reactor_theme(self) -> None:
+        """Quick-drawer theme button: cycle aura (amber retro) ↔ nebula (cyan)."""
         try:
-            from memory.config_manager import get_avatar_style, save_avatar_style
-            cur = get_avatar_style()
+            from memory.config_manager import get_reactor_theme
+            cur = get_reactor_theme()
         except Exception:
-            cur, save_avatar_style = "default", None
-        styles = ("default", "kofia", "turban", "kufi")
-        nxt = styles[(styles.index(cur) + 1) % len(styles)] if cur in styles else "default"
-        if save_avatar_style is not None:
-            try:
-                save_avatar_style(nxt)
-            except Exception:
-                pass
+            cur = "aura"
+        nxt = "nebula" if cur == "aura" else "aura"
         try:
-            self.hud.set_avatar_style(nxt)
+            self.hud.set_reactor_theme(nxt)
         except Exception:
             pass
-        self._refresh_style_btn()
+        self._refresh_theme_btn()
 
-    def _refresh_style_btn(self) -> None:
-        """Show the current avatar style on the quick-drawer button."""
+    def _refresh_theme_btn(self) -> None:
+        """Show the current reactor theme on the quick-drawer button."""
         try:
-            from memory.config_manager import get_avatar_style
-            cur = get_avatar_style()
+            from memory.config_manager import get_reactor_theme
+            cur = get_reactor_theme()
         except Exception:
-            cur = "default"
+            cur = "aura"
         try:
             self._style_btn.setText(
-                "\U0001f3ad  " + t("avatar_style_label").upper() + f": {cur.upper()}")
+                "\U0001f3ad  " + t("reactor_theme_label").upper() + f": {cur.upper()}")
         except Exception:
             pass
 
@@ -5566,33 +5501,29 @@ class MainWindow(QMainWindow):
 
 
     def _refresh_hud_btn(self):
-        from memory.config_manager import get_render_mode
-        mode = get_render_mode()
-        label = {"realistic": t("mode_realistic"),
-                 "hologram": t("mode_hologram"),
-                 "reactor": t("mode_reactor")}.get(mode, mode)
+        from memory.config_manager import get_reactor_theme
+        theme = get_reactor_theme()
+        label = {"aura": "AMBER RETRO", "nebula": "CYAN HOLO"}.get(theme, theme)
         self._hud_btn.setText(
-            f"◈  {t('render_mode_label').upper()}: {label.upper()}")
+            f"◈  {t('reactor_theme_label').upper()}: {label.upper()}")
 
     def _toggle_hud_style(self):
-        """Cycle the centrepiece render mode: realistic → hologram → reactor.
-
-        The legacy hud_style flag is kept in sync (face for the two head
-        modes, core for the reactor) so old configs keep working.
-        """
-        from memory.config_manager import (get_render_mode, save_render_mode,
-                                           save_hud_style)
-        order = ["realistic", "hologram", "reactor"]
-        cur = get_render_mode()
-        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "realistic"
-        save_render_mode(nxt)
-        save_hud_style("core" if nxt == "reactor" else "face")
+        """Cycle the reactor visual theme: aura (amber retro-phosphor)
+        ↔ nebula (cyan hologram). The avatar is gone — this button now
+        re-skins the arc reactor instead of swapping the centrepiece."""
+        from memory.config_manager import get_reactor_theme
+        cur = get_reactor_theme()
+        nxt = "nebula" if cur == "aura" else "aura"
         try:
-            self.hud.set_render_mode(nxt)
+            self.hud.set_reactor_theme(nxt)
         except Exception:
             pass
         self._refresh_hud_btn()
-        self._log.append_log(f"SYS: Render mode → {nxt}.")
+        try:
+            self._refresh_theme_btn()
+        except Exception:
+            pass
+        self._log.append_log(f"SYS: Reactor theme → {nxt}.")
 
     def _toggle_ptt(self):
         from memory.config_manager import (get_push_to_talk_enabled,
@@ -6144,10 +6075,9 @@ class ShiraziUI:
             pass
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:
-        """Ask the avatar to look somewhere for a moment (see HoloAvatar.glance)."""
+        """Legacy avatar hook — delegates to the HUD (now a no-op)."""
         try:
-            if self._avatar is not None:
-                self._avatar.glance(dx, dy, hold)
+            self._win.hud.glance(dx, dy, hold)
         except Exception:
             pass
 
