@@ -574,6 +574,17 @@ def save_render_mode(mode: str) -> None:
                m if m in ("realistic", "hologram", "reactor") else "realistic")
 
 
+def get_reactor_theme() -> str:
+    """AURA-58 reactor palette: aura (amber retro-phosphor) | nebula (cyan)."""
+    v = str(load_api_keys().get("reactor_theme", "aura")).strip().lower()
+    return v if v in ("aura", "nebula") else "aura"
+
+
+def save_reactor_theme(theme: str) -> None:
+    t = str(theme or "").strip().lower()
+    _save_flag("reactor_theme", t if t in ("aura", "nebula") else "aura")
+
+
 def get_mic_gain() -> float:
     """Software mic gain, percent, clamped 50–200. Applied to PCM input."""
     try:
