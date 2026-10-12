@@ -2,10 +2,12 @@
 
 **The free-first, independent personal AI assistant for desktop + mobile.**
 
-Shirazi hears you, sees your screen, speaks with a lip-synced holographic avatar,
-and controls your computer — from your desk or from your phone. No subscription,
-no vendor lock-in, no single AI provider: it runs on free tiers (Gemini,
-OpenRouter, local Ollama) and every provider is swappable.
+Shirazi hears you, sees your screen, and controls your computer — from your
+desk or from your phone — all centred on a live **AURA-58 arc reactor** HUD:
+glassmorphism + retro-futuristic design, switchable between amber-phosphor
+and cyan-hologram themes. No subscription, no vendor lock-in, no single AI
+provider: it runs on free tiers (Gemini, OpenRouter, local Ollama) and every
+provider is swappable.
 
 > **Origin note.** Shirazi began as a rebrand and rebuild of the open-source
 > [Mark-LIV](https://github.com/FatihMakes/Mark-LIV) project by FatihMakes
@@ -44,8 +46,9 @@ Shirazi is a voice-first AI assistant that lives on your computer and extends to
 your phone:
 
 - **Talk to it** — push-to-talk, optional local wake word, or type.
-- **It talks back** — streaming speech with a holographic avatar that lip-syncs
-  to what it says.
+- **It talks back** — streaming speech with the AURA-58 arc reactor pulsing
+  to its voice: glass dome, vacuum-tube phosphor core, nixie-tube telemetry —
+  in amber-retro or cyan-hologram themes.
 - **It does things** — open apps, control volume/media, browse, manage files,
   run code (with your confirmation), research topics, set reminders.
 - **From your phone** — a mobile dashboard (PWA) on your Wi-Fi: tap-to-talk,
@@ -62,7 +65,7 @@ anyone, and paid paths are disclosed, never assumed.
 
 | Area | What you get |
 |---|---|
-| 🧑‍🎤 Holographic avatar | Software-rendered head (QPainter + numpy, no GPU), real lip-sync from formants + transcript, gaze/blink/brows as status signals |
+| ⚛️ AURA-58 arc reactor | Glassmorphism + retro-futuristic reactor HUD (QPainter + numpy, no GPU): frosted glass dome, vacuum-tube phosphor core, riveted bezel, art-deco ticks, CRT scanlines, nixie-tube telemetry. Audio-reactive rings, spokes and plasma; two live themes (aura / nebula) |
 | 🎙️ Voice | Push-to-talk (Ctrl+Space; global on Windows), local wake-word option, self-echo guard |
 | 🧠 AI providers | Gemini, Gemini Live (realtime audio), OpenRouter, Ollama — chainable with free-first ordering |
 | 🔐 Permission engine | Every tool call is gated: SAFE / READ_ONLY / USER_CONFIRMATION / PRIVILEGED. Destructive or code-execution actions always ask; the phone tap counts as approval for remote control |
@@ -71,7 +74,30 @@ anyone, and paid paths are disclosed, never assumed.
 | 🌍 i18n | English, اردو (Urdu), العربية, Roman Urdu |
 | 🔍 Research mode | Multi-source research dossiers with claim tags |
 | 🧩 Skills | Actions and plugins share one shape (`TOOL`/`PLUGIN` dict + `run()`), auto-discovered at launch |
+| 🔌 Plugins (15) | Drop-in plugins: daily briefing, ghost protocol (1-click privacy), focus mode, scenes (goodnight/work-mode macros), clipboard history, download watcher, news intel, document Q&A, presentation designer, project scaffolder, voice macros, system diagnostics, Telegram remote (hardened), war mode, app-usage tracking |
 | ☁️ SaaS foundations | Multi-user accounts, device registry, per-user provider chain, usage metering (local-first; see `docs/SAAS.md`) |
+
+---
+
+## AURA-58 arc reactor
+
+The HUD centrepiece is a software-rendered arc reactor (no GPU needed),
+designed in a **glassmorphism + retro-futuristic** language:
+
+- **Frosted glass dome** with a specular crescent over a **vacuum-tube
+  phosphor core** (filament coil, mains flicker)
+- **Riveted bronze bezel**, art-deco sunburst ticks, synthwave grid floor
+- **CRT scanlines** with a drifting shimmer band
+- **Glass telemetry panels** with nixie-tube amber digits (state, arc
+  integrity, flux, audio, latency)
+- Audio-reactive waveform ring, energy spokes, plasma arcs, orbiting
+  particles — everything on screen means something (state, voice level,
+  thinking activity)
+- **Two live themes**, switchable from the HUD: `aura` (amber
+  retro-phosphor, default) and `nebula` (cyan hologram); "war mode"
+  re-skins it crimson for tactical alert
+
+The holographic avatar was removed — the reactor carries the whole HUD now.
 
 ---
 
@@ -80,7 +106,7 @@ anyone, and paid paths are disclosed, never assumed.
 ```
 ┌─────────────┐      ┌──────────────────────────────┐
 │  PyQt6 HUD  │◄────►│           main.py            │
-│ (avatar,    │      │  Live loop · agent engine    │
+│ (AURA-58    │      │  Live loop · agent engine    │
 │  reactor)   │      │  permission gate · memory    │
 └─────────────┘      └──────┬───────────────┬───────┘
                             │               │
@@ -102,7 +128,8 @@ Key directories:
 
 | Path | Role |
 |---|---|
-| `main.py`, `ui.py` | Desktop app: Live loop, HUD, reactor, avatar |
+| `main.py`, `ui.py` | Desktop app: Live loop, reactor-only HUD |
+| `ui_reactor.py` | AURA-58 reactor renderer: glassmorphism + retro-futuristic, aura/nebula themes |
 | `core/providers/` | AI provider abstraction (Gemini, Live, OpenRouter, Ollama) |
 | `core/agent/` | Intent → plan → permission-gated tool execution |
 | `core/permissions.py` | The single gate every tool call passes |
