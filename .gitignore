@@ -61,3 +61,6 @@ screenshots/
 # the phone dashboard's user-added quick commands
 # (machine-local state, created at runtime)
 config/dashboard.json
+# ── Hadith part DBs (downloaded from Drive, never committed) ──────────────
+research/hadith-library/*.sqlite
+research/hadith-library/.fetch_part*
